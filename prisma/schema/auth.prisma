@@ -28,6 +28,9 @@ model User {
   // Relations
   profile       Profile?
   refreshTokens RefreshToken[]
+  // Broadcasts this admin triggered. Author only — an admin is never the
+  // subject of an attendance or daily-update record.
+  reminderLogs  ReminderLog[]
 
   @@map("users")
 }

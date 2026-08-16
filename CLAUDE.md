@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Express 5 + TypeScript + Prisma 7 (PostgreSQL) REST API for a Discord daily-attendance / update automation admin dashboard. Authentication is strictly for administrators (no regular user login/registration; students/members submit attendance directly via web form). Auth, user, and the Discord bot / member-sync modules exist; the attendance domain is not built yet.
+Express 5 + TypeScript + Prisma 7 (PostgreSQL) REST API for a Discord daily-attendance / update automation admin dashboard. Authentication is strictly for administrators (no regular user login/registration; students/members submit attendance directly via web form). Auth, user, and the Discord bot / member-sync modules exist. The attendance domain has its **persistence layer only** — schema, migration, and `src/repositories/`; there are no attendance HTTP endpoints, no `messageCreate` ingestion, no scheduler, and no reminder queue yet.
 
 ## Commands
 
@@ -32,7 +32,7 @@ No test framework is configured.
 
 ## Prisma setup (the main source of surprises)
 
-- **Config lives in `prisma.config.ts`**, not `package.json`. It points at the _directory_ `prisma/schema/` (split schema: `schema.prisma` holds generator + datasource, `auth.prisma` holds `User`/`RefreshToken`, `user.prisma` holds `Profile`, `discord.prisma` holds `DiscordMember`). Adding a new `.prisma` file to that directory is enough for it to be picked up.
+- **Config lives in `prisma.config.ts`**, not `package.json`. It points at the _directory_ `prisma/schema/` (split schema: `schema.prisma` holds generator + datasource, `auth.prisma` holds `User`/`RefreshToken`, `user.prisma` holds `Profile`, `discord.prisma` holds `DiscordMember`, `attendance.prisma` holds `Attendance`/`DailyUpdate`, `reminder.prisma` holds `ReminderLog`/`ReminderRecipient`). Adding a new `.prisma` file to that directory is enough for it to be picked up.
 - The `prisma-client` generator outputs to **`generated/prisma`**, which is **gitignored**. A fresh clone will not typecheck until `bunx prisma generate` runs.
 - Import generated types from the `@generated/*` alias (`@generated/prisma/client`, `@generated/prisma/enums`) — never from `@prisma/client`.
 - The datasource block has **no `url`**; the connection is supplied at runtime by the `@prisma/adapter-pg` driver adapter in `src/lib/prisma.ts` (and by `prisma.config.ts` for CLI commands). Always use the shared `prisma` singleton from `@/lib/prisma`.
@@ -50,9 +50,22 @@ Each feature under `src/modules/<name>/` is four files with fixed roles, each ex
 - `*.routes.ts` — composes `validateRequest(schema)` and `auth(...roles)` middleware, exports `<name>Router`.
 - `*.validation.ts` — Zod v4 schemas validating **`req.body` only**.
 - `*.controller.ts` — wrapped in `catchAsync`, reads `req.user`, returns via `sendResponse(res, { success, statusCode, message, data, meta? })`. All responses go through `sendResponse`; controllers never touch Prisma.
-- `*.service.ts` — all Prisma access and business rules; throws `AppError(statusCode, message)`.
+- `*.service.ts` — business rules; throws `AppError(statusCode, message)`. Owns Prisma directly for auth/user/discord, and delegates to `src/repositories/` for the attendance domain (see below).
 
 New modules follow this shape and are registered in `src/app.ts`.
+
+### Repository layer (`src/repositories/`)
+
+Attendance-domain data access lives in `src/repositories/*.repository.ts`, not in a module service, because its callers are not all HTTP-scoped: daily-update ingestion runs in a Discord gateway handler and the reminder queue runs in a BullMQ worker. Both must share the same queries as the Express modules — the alternative is two drifting definitions of "has this member submitted today".
+
+The rule: **controllers never touch Prisma; services own business rules and throw `AppError`; repositories own Prisma and nothing else** — no `AppError`, no HTTP status codes, no `req`. A repository returns data or `null`; deciding that a `null` is a 404 stays in the service.
+
+- `attendance.repository.ts`, `dailyUpdate.repository.ts`, `reminder.repository.ts` — writes and per-member reads.
+- `dailyStatus.repository.ts` — the dashboard aggregation, in `$queryRaw` because a computed status column is not expressible in Prisma's fluent API. Sort column and direction come from a closed `Prisma.sql` allowlist; every other value is a bound parameter.
+
+Dashboard figures (total members, attendance submitted, …) belong **only** to `getDailyStatusCounts`. They interlock and must agree, so a convenience `count()` elsewhere is drift, not a shortcut — a plain `prisma.attendance.count()` would silently include departed members and disagree.
+
+Because `$queryRaw` does not break at compile time when a column is renamed, each raw query lists the columns it depends on in a comment above it. Check those by hand after any schema change.
 
 ### Auth flow
 
@@ -72,12 +85,19 @@ Runs **in the same process as Express**, under `src/lib/discord/` (not a module,
 
 Rules that matter:
 
-- **`DiscordMember` ≠ `User`.** `discord_members` is the synced guild directory and never authenticates; `users` is the ADMIN login account. Attendance/daily-update FKs belong on `DiscordMember`.
+- **`DiscordMember` ≠ `User`.** `discord_members` is the synced guild directory and never authenticates; `users` is the ADMIN login account. Attendance/daily-update FKs belong on `DiscordMember` and are named `memberId` — never `userId`, which would read as pointing at `users`. The PID's schema listing calls its member model `User`; that entity is `DiscordMember` here, so PID SQL must be transcribed, not copied.
 - **Upsert on `discordUserId`, never on `discordUsername`.** Discord handles are mutable, so upserting on username creates a duplicate row on every rename. `upsertMemberPayload()` also handles the P2002 case where a member renames onto a handle another row still holds.
 - **Departure flags, never deletes** — `isInGuild: false` + `leftAt`, so attendance history keeps a valid owner. Query `where: { isInGuild: true }` when you mean "currently in the server".
-- **The departure guard**: if a member fetch returns 0 non-bots, or under 50% of the stored active count, the reconcile is skipped and logged loudly. Never remove it — without it a truncated fetch marks the whole directory departed in one `updateMany`, locking every student out of the attendance form.
+- **The departure guard**: if a member fetch returns 0 non-bots, or under 50% of the stored active count, the reconcile is skipped and logged loudly. Never remove it — without it a truncated fetch marks the whole directory departed in one `updateMany`, locking every student out of the attendance form. It is also load-bearing for the dashboard: every query in `dailyStatus.repository.ts` filters on `isInGuild`, so a mass-flagging would silently shrink the completion-rate denominator and empty the reminder target list, with no error raised anywhere.
 - **Server Members privileged intent** must be ON in the Discord Developer Portal. With it off, Discord rejects the connection outright (`Used disallowed intents`) rather than returning a partial list, so the bot fails to log in and sync never runs — the API keeps serving either way.
 - Channel and guild IDs always come from `.env` (`src/config/discord.ts`, Zod-validated as 17–20 digit snowflakes). Never key logic off a channel name.
+
+### Dates and the attendance domain
+
+- **Civil dates are `String` in `YYYY-MM-DD`, never `DateTime`.** `attendance_date`, `message_date`, and `reminder_date` are Dhaka calendar dates, not instants. A `DateTime` column round-trips through a timezone-carrying JS `Date` and can shift a 23:58 Dhaka submission onto the wrong day; a string cannot be silently shifted by a driver. The format sorts and range-scans correctly, so month ranges are plain string comparisons.
+- **`src/utils/dhakaDate.ts` is the only producer of those dates.** `getDhakaDate(instant?)` uses `Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' })` and is independent of the server's `TZ` (verified under `TZ=UTC` and `TZ=America/New_York`). Never slice an ISO string — that yields the UTC day. Pass an explicit instant when the day is not "now": a daily update belongs to the day its **message was sent**, and a reminder run just after midnight targets the day that already closed. `isValidDhakaDate` / `dhakaDateSchema` guard the column, which Postgres would otherwise let hold anything.
+- **Duplicate prevention is a database constraint, never a read-then-write check** (`@@unique([memberId, attendanceDate])`, `@unique` on `discord_message_id`, `@@unique([reminderId, memberId])`). A prior existence check does not survive concurrency; two simultaneous submissions would both pass it. P2002 is expected and handled centrally.
+- `ReminderLog.sentCount` / `failedCount` are an incrementing cache for the SSE progress bar; `reminder_recipients` is the source of truth. `finalizeReminderLog()` recomputes both from the recipient rows so a crashed worker cannot leave them permanently wrong.
 
 ### Error handling
 

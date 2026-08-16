@@ -1,0 +1,72 @@
+// Reminder broadcasts: one session row per admin-triggered run, one recipient
+// row per targeted member holding that member's individual delivery outcome.
+//
+// The recipient rows are the source of truth; `sentCount` / `failedCount` on
+// the session are an incrementing cache so the SSE progress bar can read one
+// small row instead of aggregating recipients on every poll.
+
+enum ReminderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ReminderDeliveryStatus {
+  // A recipient row exists from the moment the broadcast is queued; it only
+  // reaches a terminal state when its job actually runs.
+  PENDING
+  DELIVERED
+  DM_CLOSED // Discord error 50007 — the fallback channel mention targets these
+  FAILED
+}
+
+// One broadcast session.
+model ReminderLog {
+  id String @id @default(uuid())
+
+  reminderDate String @map("reminder_date") // YYYY-MM-DD, Asia/Dhaka
+  message      String @db.Text
+
+  targetCount Int            @map("target_count")
+  sentCount   Int            @default(0) @map("sent_count")
+  failedCount Int            @default(0) @map("failed_count")
+  status      ReminderStatus @default(PENDING)
+
+  // The admin who triggered it. Nullable with SetNull: deleting a retired
+  // admin account must not delete the audit trail of broadcasts they sent.
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  recipients ReminderRecipient[]
+
+  @@index([reminderDate])
+  @@map("reminder_logs")
+}
+
+// One targeted member's outcome within a broadcast.
+model ReminderRecipient {
+  id String @id @default(uuid())
+
+  reminderId String      @map("reminder_id")
+  reminder   ReminderLog @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  memberId String        @map("member_id")
+  member   DiscordMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  status       ReminderDeliveryStatus @default(PENDING)
+  errorMessage String?                @map("error_message")
+  sentAt       DateTime?              @map("sent_at")
+  createdAt    DateTime               @default(now()) @map("created_at")
+
+  // Golden Rule 7 / Golden Rule 4: a retried queue job must not be able to DM
+  // the same member twice within one broadcast.
+  @@unique([reminderId, memberId])
+  // Live progress counts and the closed-DM fallback list.
+  @@index([reminderId, status])
+  @@map("reminder_recipients")
+}

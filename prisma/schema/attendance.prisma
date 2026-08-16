@@ -1,0 +1,72 @@
+// Attendance domain: web-form submissions and ingested #daily-update messages.
+//
+// Both models hang off `DiscordMember` (the synced guild directory), never off
+// `User` in auth.prisma — `User` is the ADMIN login account and is not a
+// subject of attendance. The PID's schema listing calls its member model
+// `User`; here that entity is `DiscordMember`, so its foreign key is `memberId`.
+//
+// Civil dates are stored as `String` in `YYYY-MM-DD`, always derived in
+// Asia/Dhaka by `src/utils/dhakaDate.ts`. They are calendar dates, not
+// instants: a `DateTime` column would round-trip through a timezone-carrying JS
+// Date and could shift a 23:58 Dhaka submission onto the wrong day.
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  EXCUSED
+}
+
+// One web-form submission. At most one per member per Dhaka day.
+model Attendance {
+  id String @id @default(uuid())
+
+  memberId String        @map("member_id")
+  member   DiscordMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  // Denormalized on purpose: these are what the student declared at submission
+  // time. Resolving them from the directory at read time would let a later
+  // contact-details change rewrite what an earlier day's report says.
+  name  String
+  email String
+  phone String
+
+  attendanceDate String           @map("attendance_date") // YYYY-MM-DD, Asia/Dhaka
+  status         AttendanceStatus @default(PRESENT)
+  submittedAt    DateTime         @default(now()) @map("submitted_at")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  // Golden Rule 7: duplicate prevention lives in the database, not in a
+  // read-then-write check, so concurrent submissions cannot both succeed.
+  // Also serves Phase 3's "already submitted today?" lookup.
+  @@unique([memberId, attendanceDate])
+  // Date-filtered join side of the daily status aggregation.
+  @@index([attendanceDate])
+  @@map("attendances")
+}
+
+// One message ingested from the #daily-update channel. A member may post
+// several in a day; each is its own row, and the aggregation de-duplicates.
+model DailyUpdate {
+  id String @id @default(uuid())
+
+  memberId String        @map("member_id")
+  member   DiscordMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  // Golden Rule 7: the idempotency key. A replayed gateway event after a bot
+  // reconnect must not create a second row.
+  discordMessageId String @unique @map("discord_message_id")
+  channelId        String @map("channel_id")
+  message          String @db.Text
+
+  messageDate      String   @map("message_date") // YYYY-MM-DD, Asia/Dhaka
+  // The instant the message was sent — not when it was persisted. A message
+  // sent at 23:58 and written at 00:01 belongs to the day it was sent.
+  messageCreatedAt DateTime @map("message_created_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  // Date-filtered DISTINCT subquery in the aggregation.
+  @@index([messageDate])
+  // The dashboard's user-detail modal: this member's messages on this day.
+  @@index([memberId, messageDate])
+  @@map("daily_updates")
+}

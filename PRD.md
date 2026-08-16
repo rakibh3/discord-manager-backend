@@ -759,8 +759,8 @@ Phase 1: Discord Bot Core & Member Sync
 
 Phase 2: Database & Prisma Architecture
 ├── [x] PostgreSQL Database setup (Docker / Cloud)
-├── [ ] Complete Prisma Schema migration (User, Attendance, DailyUpdate, ReminderLog)
-├── [ ] Efficient Indexes & Repository helper queries
+├── [x] Complete Prisma Schema migration (User, Attendance, DailyUpdate, ReminderLog)
+├── [x] Efficient Indexes & Repository helper queries
 
 Phase 3: Web Attendance Endpoints & Live Verification
 ├── [ ] GET /api/attendance/verify-user?username=... (Server membership & duplicate check)

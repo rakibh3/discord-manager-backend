@@ -19,6 +19,12 @@ model DiscordMember {
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
+  // Attendance domain. Cascades exist to prevent orphaned rows, not as an
+  // expected path: departures flag `isInGuild`, they never delete the member.
+  attendances        Attendance[]
+  dailyUpdates       DailyUpdate[]
+  reminderRecipients ReminderRecipient[]
+
   @@index([discordUsername])
   @@index([isInGuild])
   @@map("discord_members")
