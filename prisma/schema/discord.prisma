@@ -1,0 +1,25 @@
+// Discord Guild Member (synced from the Discord server, never an admin account).
+// Distinct from `User` in auth.prisma, which is the ADMIN login account.
+// Members are flagged with `isInGuild` on departure, never deleted, so that
+// attendance and daily-update history keeps a valid owner.
+
+model DiscordMember {
+  id              String    @id @default(uuid())
+  discordUserId   String    @unique @map("discord_user_id")
+  discordUsername String    @unique @map("discord_username")
+  displayName     String?   @map("display_name")
+  globalName      String?   @map("global_name")
+  avatarUrl       String?   @map("avatar_url")
+  email           String?
+  phone           String?
+  isInGuild       Boolean   @default(true) @map("is_in_guild")
+  joinedAt        DateTime? @map("joined_at")
+  leftAt          DateTime? @map("left_at")
+  lastSyncedAt    DateTime  @default(now()) @map("last_synced_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([discordUsername])
+  @@index([isInGuild])
+  @@map("discord_members")
+}

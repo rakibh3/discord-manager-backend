@@ -5,6 +5,9 @@ import { env } from 'process';
 // Load environment variables
 dotenv.config({ path: path.join(process.cwd(), '.env'), quiet: true });
 
+export type { TDiscordConfig } from '@/config/discord';
+export { isDiscordConfigured, loadDiscordConfig } from '@/config/discord';
+
 // Export config from environment
 export default {
   port: env.PORT,

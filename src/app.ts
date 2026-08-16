@@ -5,6 +5,7 @@ import express, { Application } from 'express';
 import errorHandler from '@/errors/globalErrorHandler';
 import { notFoundRoute } from '@/errors/notFound';
 import { authRouter } from '@/modules/auth/auth.routes';
+import { discordRouter } from '@/modules/discord/discord.routes';
 import { userRouter } from '@/modules/user/user.routes';
 
 const app: Application = express();
@@ -22,6 +23,7 @@ app.use(cookieParser());
 
 app.use('/api/auth', authRouter);
 app.use('/api/users', userRouter);
+app.use('/api/discord', discordRouter);
 
 app.get('/', (req, res) => {
   res.send('Hello, World!');

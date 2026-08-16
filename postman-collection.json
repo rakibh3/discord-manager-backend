@@ -216,6 +216,76 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Discord",
+      "description": "Discord bot & guild member sync endpoints (requires ADMIN role).",
+      "item": [
+        {
+          "name": "Get Sync Status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/discord/sync/status",
+            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), and the last sync summary."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Sync status retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.bot).to.have.property('connected');",
+                  "    pm.expect(jsonData.data.members).to.have.property('active');",
+                  "});",
+                  "",
+                  "// The departure guard trips when a member fetch looks truncated,",
+                  "// which almost always means the Server Members privileged intent is off.",
+                  "if (jsonData.data && jsonData.data.lastSync && jsonData.data.lastSync.guardTripped) {",
+                  "    console.warn('⚠️ Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Trigger Member Sync",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/discord/sync",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Starts a full guild member re-sync and returns immediately with 202 Accepted; the sync itself runs in the background. Returns 409 if a sync is already running, or 503 if the bot is not connected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Member sync accepted', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "    pm.expect(pm.response.json().success).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

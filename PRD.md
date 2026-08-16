@@ -141,19 +141,22 @@ Discord-এর অফিসিয়াল **New Usernames & Display Names** গ
    - পরপর দুটি ডট (`..`) অনুমোদিত নয়।
    - কোনো স্পেস বা ডিসকর্ডের অবৈধ ক্যারেক্টার (`#`, `:`, `@`, ```` ইত্যাদি) দেওয়া যাবে না।
    - কোনো ডিসক্রিমিনেটর ট্যাগ (`#0000`) থাকবে না।
-4. **কেস-ইনসেনসিটিভ (Case-Insensitive):** ডিসকর্ডে সব ইউজারনেম স্বয়ংক্রিয়ভাবে ছোট হাতের অক্ষরে কনভার্ট হয়ে স্টোর হয় (যেমন: `Rakib_Dev` ➔ `rakib_dev`)।
+4. **শুরু বা শেষে `_` / `.` অনুমোদিত (Leading & Trailing Allowed):** ইউজারনেমের শুরুতে বা শেষে আন্ডারস্কোর (`_`) বা ডট (`.`) থাকতে পারে — যেমন: `itzazad_`, `.rabbil`, `shahriarratul.`। এগুলো কোনোভাবেই ব্লক করা যাবে না।
+
+   > ⚠️ **যাচাইকৃত (Verified against live server):** ২,১৮৯ জন মেম্বারের মধ্যে **১১৫ জনের (৫.৩%)** ইউজারনেম শুরু বা শেষে `_` / `.` দিয়ে গঠিত। এদের ৫৯ জনের অ্যাকাউন্ট Pomelo রোলআউটের **পরে** তৈরি — অর্থাৎ এগুলো পুরোনো grandfathered নাম নয়, ডিসকর্ড এখনো এই নাম অনুমোদন করে। এই নিয়ম ব্লক করলে ১৯ জনে ১ জন শিক্ষার্থী কখনোই attendance দিতে পারবে না (Golden Rule 3-এর সাথে সরাসরি সংঘর্ষ)।
+
+5. **কেস-ইনসেনসিটিভ (Case-Insensitive):** ডিসকর্ডে সব ইউজারনেম স্বয়ংক্রিয়ভাবে ছোট হাতের অক্ষরে কনভার্ট হয়ে স্টোর হয় (যেমন: `Rakib_Dev` ➔ `rakib_dev`)।
 
 ```typescript
 /**
- * Official Discord Username Validation Regex (Based on Discord Support Specs)
+ * Official Discord Username Validation Regex
  * - 2 to 32 characters
  * - Only lowercase a-z, 0-9, underscore (_), period (.)
- * - Cannot start or end with a period or underscore
  * - Cannot have consecutive periods (..)
- * - Cannot start with @
+ * - Leading/trailing `_` and `.` ARE allowed (verified against the live server)
+ * - A leading `@` is stripped by normalizeDiscordUsername before validation
  */
-export const DISCORD_USERNAME_REGEX =
-  /^(?![_.@])(?!.*\.{2})[a-z0-9_.]{2,32}(?<![_.])$/;
+export const DISCORD_USERNAME_REGEX = /^(?!.*\.{2})[a-z0-9_.]{2,32}$/;
 
 /**
  * Normalizes user input by trimming whitespace, removing leading '@', and converting to lowercase.
@@ -306,6 +309,48 @@ export async function syncGuildMembers(client: Client, guildId: string) {
   }
 }
 ```
+
+### 6.3. Real-time Member Event Sync (Join / Leave):
+
+শুধুমাত্র বট চালু হওয়ার সময় সিঙ্ক করলেই যথেষ্ট নয়। বট চালু থাকা অবস্থায় নতুন কেউ সার্ভারে জয়েন করলে বা কেউ সার্ভার ত্যাগ করলে, তৎক্ষণাৎ ডাটাবেসে রিফ্লেক্ট হতে হবে — নাহলে নতুন জয়েন করা ইউজার Attendance ফর্ম সাবমিট করতে পারবে না।
+
+```typescript
+// Real-time: New Member Joins
+client.on('guildMemberAdd', async (member) => {
+  if (member.user.bot) return;
+
+  const normalizedUsername = normalizeDiscordUsername(member.user.username);
+  await prisma.user.upsert({
+    where: { discordUsername: normalizedUsername },
+    update: {
+      discordUserId: member.id,
+      displayName: member.displayName || member.user.username,
+      avatarUrl: member.user.displayAvatarURL(),
+    },
+    create: {
+      discordUsername: normalizedUsername,
+      discordUserId: member.id,
+      displayName: member.displayName || member.user.username,
+      avatarUrl: member.user.displayAvatarURL(),
+    },
+  });
+
+  console.log(`[MemberSync] New member synced: ${normalizedUsername}`);
+});
+
+// Real-time: Member Leaves / Kicked / Banned
+client.on('guildMemberRemove', async (member) => {
+  if (member.user.bot) return;
+
+  const normalizedUsername = normalizeDiscordUsername(member.user.username);
+  
+  // Soft handling: ইউজারকে ডিলিট না করে শুধু লগ করা হবে,
+  // যাতে তার আগের attendance ও daily update হিস্ট্রি সংরক্ষিত থাকে।
+  console.log(`[MemberSync] Member left: ${normalizedUsername} (${member.id})`);
+});
+```
+
+> **ডিজাইন সিদ্ধান্ত:** `guildMemberRemove`-এ ইউজার ডাটাবেস থেকে **ডিলিট করা হবে না**। কারণ তার পূর্ববর্তী Attendance, DailyUpdate ও Reminder হিস্ট্রি রিপোর্টিং ও অডিটের জন্য সংরক্ষিত থাকা দরকার। তবে সে আর Attendance ফর্ম সাবমিট করতে পারবে না, কারণ ভেরিফিকেশনে সার্ভার মেম্বার হিসেবে পাওয়া যাবে না।
 
 ---
 
@@ -708,8 +753,9 @@ Delivered: 1,210 | DM Closed: 65 | Failed: 5
 Phase 1: Discord Bot Core & Member Sync
 ├── [x] Discord Developer Application Creation (Bot Added to Server)
 ├── [x] Privileged Gateway Intents (Members & Message Content)
-├── [ ] Discord Bot Token & Channel IDs Setup in .env
-├── [ ] Bot client initialization, ready event & initial guild.members.fetch() sync into DB
+├── [x] Discord Bot Token & Channel IDs Setup in .env
+├── [x] Bot client initialization, ready event & initial guild.members.fetch() sync into DB
+├── [x] Real-time member sync: guildMemberAdd → auto upsert, guildMemberRemove → log only
 
 Phase 2: Database & Prisma Architecture
 ├── [x] PostgreSQL Database setup (Docker / Cloud)
@@ -746,7 +792,7 @@ Phase 7: Admin Dashboard (Frontend & API)
 # 16. Golden Engineering Rules
 
 1. **Snowflake User ID for DMs:** DM পাঠানোর জন্য সবসময় `discord_user_id` ব্যবহার করতে হবে।
-2. **Strict Official Username Rules:** ইউজারনেম মেলানোর আগে সবসময় ডিসকর্ডের অফিসিয়াল স্ট্যান্ডার্ড রেজেক্স (`/^(?![_.@])(?!.*\.{2})[a-z0-9_.]{2,32}(?<![_.])$/`) মেনে ভ্যালিডেট ও লোয়ারকেস নরমালাইজ করতে হবে।
+2. **Strict Official Username Rules:** ইউজারনেম মেলানোর আগে সবসময় ডিসকর্ডের অফিসিয়াল স্ট্যান্ডার্ড রেজেক্স (`/^(?!.*\.{2})[a-z0-9_.]{2,32}$/`) মেনে ভ্যালিডেট ও লোয়ারকেস নরমালাইজ করতে হবে। ভ্যালিডেশন কখনোই বৈধ মেম্বারকে ব্লক করার মতো কড়া হবে না — শুরু/শেষে `_` বা `.` অনুমোদিত (দেখুন §3.2)।
 3. **Strict Form Verification:** ফর্মে টাইপ করা ইউজারনেম সার্ভার মেম্বার লিস্টে না থাকলে কোনোভাবেই ফর্ম সাবমিট করতে দেওয়া হবে না।
 4. **Never Burst DMs:** কখনোই লুপের মধ্যে সরাসরি হাজার হাজার DM ফায়ার করা যাবে না; সবসময় BullMQ Queue রেট লিমিট দিয়ে প্রসেস করতে হবে।
 5. **Timezone Uniformity:** ডেট ক্যালকুলেশনে সবসময় `Asia/Dhaka` টাইমজোন স্ট্যান্ডার্ড হিসেবে বজায় রাখতে হবে।
