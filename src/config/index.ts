@@ -16,4 +16,15 @@ export default {
   jwt_refresh_expires_in: env.JWT_REFRESH_EXPIRES_IN,
   app_url: env.APP_URL,
   env: env.NODE_ENV,
+  admin: {
+    emails: env.ADMIN_EMAILS
+      ? env.ADMIN_EMAILS.split(',')
+          .map((e) => e.trim())
+          .filter(Boolean)
+      : env.ADMIN_EMAIL
+        ? [env.ADMIN_EMAIL.trim()].filter(Boolean)
+        : [],
+    name: env.ADMIN_NAME,
+    password: env.ADMIN_PASSWORD,
+  },
 };

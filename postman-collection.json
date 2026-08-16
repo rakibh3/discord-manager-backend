@@ -1,13 +1,13 @@
 {
   "info": {
     "name": "Discord Daily Attendance & Update Automation API",
-    "description": "Complete collection of API routes for the Discord Daily Attendance & Update Automation application.\n\n## Auto Token Management\nThe Login request automatically saves the access token as a collection variable. All authenticated requests use it via the collection-level pre-request script — no manual copy-paste needed.\n\n## Quick Start\n1. Register a user\n2. Login (token is auto-saved)\n3. All subsequent requests automatically include the token",
+    "description": "API collection for the Discord Daily Attendance & Update Automation backend.\n\n## Authentication Model\n- **Admin Only**: System login and dashboard access is permitted exclusively for administrators.\n- **Direct Attendance**: Regular users/students do not log in or register; they submit daily attendance directly via the public web attendance form.\n\n## Auto Token Management\nThe Admin Login request automatically saves the access token as a collection variable. All authenticated requests use it via the collection-level pre-request script.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:5000/api",
+      "value": "http://localhost:8000/api",
       "type": "string"
     },
     { "key": "accessToken", "value": "", "type": "string" },
@@ -34,17 +34,17 @@
   "item": [
     {
       "name": "Auth",
-      "description": "Authentication endpoints. Login auto-saves the token for all other requests.",
+      "description": "Admin authentication endpoints. Login auto-saves the token for all other requests.",
       "item": [
         {
-          "name": "Login",
+          "name": "Admin Login",
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/auth/login",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n    \"email\": \"user@example.com\",\n    \"password\": \"password123\"\n}",
+              "raw": "{\n    \"email\": \"admin@example.com\",\n    \"password\": \"adminPassword123\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -72,7 +72,7 @@
                   "}",
                   "",
                   "// Basic assertions",
-                  "pm.test('Login successful', function () {",
+                  "pm.test('Admin Login successful', function () {",
                   "    pm.response.to.have.status(200);",
                   "    pm.expect(jsonData.success).to.be.true;",
                   "    pm.expect(jsonData.data.accessToken).to.be.a('string');",
@@ -120,28 +120,23 @@
               }
             }
           ]
-        }
-      ]
-    },
-    {
-      "name": "Users",
-      "description": "User registration and profile management.",
-      "item": [
+        },
         {
-          "name": "Register",
+          "name": "Logout",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/users/register",
+            "url": "{{baseUrl}}/auth/logout",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n    \"name\": \"John Doe\",\n    \"email\": \"john@example.com\",\n    \"password\": \"password123\",\n    \"profilePhoto\": \"https://example.com/photo.jpg\"\n}",
+              "raw": "{}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
-            }
+            },
+            "description": "Invalidates the refresh token and clears auth cookies."
           },
           "event": [
             {
@@ -149,21 +144,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('User registered', function () {",
-                  "    pm.response.to.have.status(201);",
+                  "pm.collectionVariables.set('accessToken', '');",
+                  "pm.collectionVariables.set('refreshToken', '');",
+                  "pm.test('Logout successful', function () {",
+                  "    pm.response.to.have.status(200);",
                   "    pm.expect(pm.response.json().success).to.be.true;",
                   "});"
                 ]
               }
             }
           ]
-        },
+        }
+      ]
+    },
+    {
+      "name": "Admin Profile",
+      "description": "Admin profile management endpoints (requires ADMIN role).",
+      "item": [
         {
-          "name": "Get My Profile",
+          "name": "Get Admin Profile",
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/users/me",
-            "description": "Requires auth. Returns the logged-in user's profile."
+            "description": "Requires admin auth. Returns the logged-in admin's profile."
           },
           "event": [
             {
@@ -171,7 +174,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Profile retrieved', function () {",
+                  "pm.test('Admin profile retrieved', function () {",
                   "    pm.response.to.have.status(200);",
                   "    pm.expect(pm.response.json().success).to.be.true;",
                   "});"
@@ -181,21 +184,21 @@
           ]
         },
         {
-          "name": "Update Profile",
+          "name": "Update Admin Profile",
           "request": {
             "method": "PUT",
             "url": "{{baseUrl}}/users/my-profile",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n    \"name\": \"John Updated\",\n    \"profilePhoto\": \"https://example.com/new-photo.jpg\",\n    \"bio\": \"Software Engineer and Writer\"\n}",
+              "raw": "{\n    \"name\": \"Admin User\",\n    \"profilePhoto\": \"https://example.com/admin.jpg\",\n    \"bio\": \"System Administrator\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "Requires auth. Updates the logged-in user's profile."
+            "description": "Requires admin auth. Updates the logged-in admin's profile."
           },
           "event": [
             {
@@ -203,7 +206,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Profile updated', function () {",
+                  "pm.test('Admin profile updated', function () {",
                   "    pm.response.to.have.status(200);",
                   "    pm.expect(pm.response.json().success).to.be.true;",
                   "});"

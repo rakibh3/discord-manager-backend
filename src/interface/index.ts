@@ -1,6 +1,6 @@
 import { JwtPayload } from 'jsonwebtoken';
 
-export type UserRole = 'ADMIN' | 'INSTRUCTOR' | 'STUDENT';
+export type UserRole = 'ADMIN';
 
 export interface TUser extends JwtPayload {
   id: string;

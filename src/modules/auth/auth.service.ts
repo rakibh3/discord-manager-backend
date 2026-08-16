@@ -23,6 +23,14 @@ const loginUser = async (payLoad: { email: string; password: string }) => {
     );
   }
 
+  // Ensure only administrators can log in
+  if (userData.role !== 'ADMIN') {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      'Access denied. Only administrators are permitted to log in.',
+    );
+  }
+
   const isPasswordCorrect: boolean = await bcrypt.compare(
     payLoad.password,
     userData.password,

@@ -1,4 +1,8 @@
 dist
 node_modules
 generated
-pnpm-lock.yaml
+bun.lock
+.agent
+.claude
+openspec
+commit-message.txt

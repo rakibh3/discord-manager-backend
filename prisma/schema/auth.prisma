@@ -2,8 +2,6 @@
 
 enum UserRole {
   ADMIN
-  INSTRUCTOR
-  STUDENT
 }
 
 enum UserStatus {
@@ -21,7 +19,7 @@ model User {
   email        String     @unique
   phone        String?    @unique
   password     String
-  role         UserRole   @default(STUDENT)
+  role         UserRole   @default(ADMIN)
   status       UserStatus @default(ACTIVE)
   lastActiveAt DateTime?
   createdAt    DateTime   @default(now())

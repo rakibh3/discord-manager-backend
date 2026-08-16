@@ -8,10 +8,14 @@
     "start": "node ./dist/src/server.js",
     "start:prod": "node ./dist/src/server.js",
     "start:dev": "tsx watch src/server.ts",
-    "lint": "eslint src",
-    "lint:fix": "eslint src --fix",
+    "lint": "eslint src prisma",
+    "lint:fix": "eslint src prisma --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "keywords": [],
   "author": "",

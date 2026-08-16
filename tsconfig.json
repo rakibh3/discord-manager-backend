@@ -4,9 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ES2023",
-    "types": [
-      "node"
-    ],
+    "types": ["node"],
     "declaration": false,
     "noUncheckedIndexedAccess": true,
     "strict": true,
@@ -17,22 +15,10 @@
     "skipLibCheck": true,
     "baseUrl": "./",
     "paths": {
-      "@/*": [
-        "src/*"
-      ],
-      "@generated/*": [
-        "generated/*"
-      ]
+      "@/*": ["src/*"],
+      "@generated/*": ["generated/*"]
     }
   },
-  "include": [
-    "src/**/*",
-    "app.ts",
-    "server.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "generated/prisma"
-  ]
+  "include": ["src/**/*", "app.ts", "server.ts", "prisma/**/*"],
+  "exclude": ["node_modules", "dist", "generated/prisma"]
 }

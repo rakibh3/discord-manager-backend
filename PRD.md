@@ -1,4 +1,5 @@
 # Discord Daily Attendance & Update Automation
+
 ## Project Implementation Document (PID)
 
 **Version:** 3.1 (Web Attendance Form & Official Discord Username Verification)  
@@ -11,6 +12,7 @@
 এই system-এ একটি Discord server থাকবে যেখানে আনুমানিক **৫,০০০ (5,000) users/students** থাকবে।
 
 ### System-এর প্রধান কাজ:
+
 1. **Custom Web Attendance Form:** প্রতিদিন নির্দিষ্ট সময়ে একটি কাস্টম ওয়েব ফর্মের (`/attendance`) মাধ্যমে শিক্ষার্থীদের কাছ থেকে Attendance সংগ্রহ করা।
    - ফর্মে শুধুমাত্র ৪টি নির্দিষ্ট ফিল্ড থাকবে: **Full Name**, **Phone Number**, **Email**, এবং **Discord Username**।
 2. **Official Discord Member Verification:** ফর্মে টাইপ করা Discord Username ডিসকর্ডের অফিসিয়াল ইউজারনেম স্ট্যান্ডার্ড মেনে ভ্যালিডেট হবে এবং রিয়েলটাইমে ডিসকর্ড সার্ভারের মেম্বার লিস্টের সাথে ম্যাচ করবে। সার্ভারে মেম্বার না থাকলে ফর্ম সাবমিট করা যাবে না।
@@ -108,12 +110,12 @@
 
 ### 3.1. Form Fields:
 
-| ফিল্ডের নাম | ইনপুট টাইপ | রিকোয়ার্ড? | ভ্যালিডেশন রুলস |
-|---|---|:---:|---|
-| **1. Full Name** | `text` | **Yes** | নূন্যতম ৩ অক্ষর, শুধুমাত্র বর্ণ ও স্পেস |
-| **2. Phone Number** | `tel` | **Yes** | বৈধ মোবাইল নম্বর ফরম্যাট (যেমন: `01XXXXXXXXX` বা `+8801XXXXXXXXX`) |
-| **3. Email** | `email` | **Yes** | স্ট্যান্ডার্ড ইমেইল ফরম্যাট (`user@example.com`) |
-| **4. Discord Username** | `text` | **Yes (Strict)** | Discord Official Pomelo Username Format + Live Server Member Check |
+| ফিল্ডের নাম             | ইনপুট টাইপ |    রিকোয়ার্ড?    | ভ্যালিডেশন রুলস                                                    |
+| ----------------------- | ---------- | :--------------: | ------------------------------------------------------------------ |
+| **1. Full Name**        | `text`     |     **Yes**      | নূন্যতম ৩ অক্ষর, শুধুমাত্র বর্ণ ও স্পেস                            |
+| **2. Phone Number**     | `tel`      |     **Yes**      | বৈধ মোবাইল নম্বর ফরম্যাট (যেমন: `01XXXXXXXXX` বা `+8801XXXXXXXXX`) |
+| **3. Email**            | `email`    |     **Yes**      | স্ট্যান্ডার্ড ইমেইল ফরম্যাট (`user@example.com`)                   |
+| **4. Discord Username** | `text`     | **Yes (Strict)** | Discord Official Pomelo Username Format + Live Server Member Check |
 
 ---
 
@@ -122,12 +124,14 @@
 Discord-এর অফিসিয়াল **New Usernames & Display Names** গাইডলাইন অনুযায়ী:
 
 #### ১. Username বনাম Display Name-এর স্পষ্ট পার্থক্য:
+
 - **Username (ইউনিক হ্যান্ডেল):** ডিসকর্ডে প্রতিটি ইউজারের জন্য একটি একক এবং অনন্য আইডেন্টিফায়ার (যেমন: `rakib_dev` বা `@rakib_dev`)। এটি কোনো সার্ভার বা প্রোফাইলভেদে ডুপ্লিকেট হতে পারে না। ফর্ম ও ডাটাবেসে **শুধুমাত্র এই Username ব্যবহার করা হবে**।
 - **Display Name (সার্ভার নাম):** সার্ভারে বা চ্যাটে বড় করে যে নামটি প্রদর্শিত হয় (যেমন: `Rakib Hasan ✨`)। এটি ইউনিক নয় এবং শিক্ষার্থীরা যেকোনো সময় এটি পরিবর্তন করতে পারে।
 
 #### ২. Discord Username-এর অফিশিয়াল নিয়মাবলী (Official Rules):
+
 1. **দৈর্ঘ্য:** অবশ্যই ২ থেকে ৩২ অক্ষরের মধ্যে হতে হবে (`2 - 32 characters`)।
-2. **অনুমোদিত অক্ষর:** 
+2. **অনুমোদিত অক্ষর:**
    - ছোট হাতের ল্যাটিন বর্ণ (`a-z`)
    - সংখ্যা (`0-9`)
    - আন্ডারস্কোর (`_`)
@@ -148,21 +152,21 @@ Discord-এর অফিসিয়াল **New Usernames & Display Names** গ
  * - Cannot have consecutive periods (..)
  * - Cannot start with @
  */
-export const DISCORD_USERNAME_REGEX = /^(?![_.@])(?!.*\.{2})[a-z0-9_.]{2,32}(?<![_.])$/;
+export const DISCORD_USERNAME_REGEX =
+  /^(?![_.@])(?!.*\.{2})[a-z0-9_.]{2,32}(?<![_.])$/;
 
 /**
  * Normalizes user input by trimming whitespace, removing leading '@', and converting to lowercase.
  */
 export function normalizeDiscordUsername(rawUsername: string): string {
-  return rawUsername
-    .trim()
-    .replace(/^@+/, '')
-    .toLowerCase();
+  return rawUsername.trim().replace(/^@+/, '').toLowerCase();
 }
 ```
 
 #### ৩. ফর্ম UI হেল্পার টেক্সট (Student Guidance):
+
 শিক্ষার্থীরা যেন তাদের Display Name না দিয়ে সঠিক **Discord Username** ইনপুট দেয়, সেজন্য ফর্ম ফিল্ডের নিচে একটি ভিজ্যুয়াল গাইড থাকবে:
+
 > ℹ️ **How to find your Discord Username:**  
 > Discord অ্যাপের নিচে বাম কোণায় আপনার প্রোফাইল ছবিতে ক্লিক করুন ➔ আপনার নামের নিচে `@` চিহ্নের পরের ছোট হাতের নামটি হলো আপনার **Discord Username** (যেমন: `@rakib_dev` হলে শুধু `rakib_dev` লিখুন)।
 
@@ -198,9 +202,10 @@ User types username: "rakib_dev"
 ---
 
 ### 3.4. Duplicate Prevention (One Attendance Per Day):
+
 - একই দিনে একজন ইউজার কেবল একবারই ফর্ম সাবমিট করতে পারবে।
 - ভেরিফিকেশন কল চলাকালীন ব্যাকএন্ড চেক করবে ইউজার আজকের দিনে ইতিমধ্যে সাবমিট করেছে কিনা। সাবমিট করে থাকলে মেসেজ দেবে:  
-  *⚠️ "আপনি আজকের (YYYY-MM-DD) জন্য ইতোমধ্যে attendance জমা দিয়েছেন।"*
+  _⚠️ "আপনি আজকের (YYYY-MM-DD) জন্য ইতোমধ্যে attendance জমা দিয়েছেন।"_
 - ডাটাবেস লেভেলে `@@unique([userId, attendanceDate])` কনস্ট্রেইন্ট থাকায় কোনো ডুপ্লিকেট রেকর্ড তৈরি হতে পারবে না।
 
 ---
@@ -208,21 +213,25 @@ User types username: "rakib_dev"
 # 4. Recommended Technology Stack
 
 ## Backend
+
 - **Runtime:** Node.js (v20+ LTS)
 - **Language:** TypeScript
 - **Framework:** Express.js
 - **Discord SDK:** `discord.js` (v14+)
 
 ## Database & ORM
+
 - **Database:** PostgreSQL (v16+)
 - **ORM:** Prisma ORM
 - **Migration & Client:** `@prisma/client`, `@prisma/adapter-pg`
 
 ## Background Queue & Scheduler
+
 - **Job Queue:** BullMQ + Redis (Safe DM delivery with rate-limiting & retries)
 - **Cron Scheduler:** `node-cron` / BullMQ Repeatable Jobs (Dhaka Timezone `Asia/Dhaka`)
 
 ## Frontend (Attendance Form & Admin Dashboard)
+
 - **Framework:** Next.js (App Router)
 - **Styling:** Tailwind CSS
 - **Live State:** Server-Sent Events (SSE) for broadcast progress
@@ -245,6 +254,7 @@ Server-এ ৩টি সুনির্দিষ্ট চ্যানেল থ
 ```
 
 > **নিয়ম:** কোডে চ্যানেলের নামের ওপর কোনো লজিক থাকবে না; সবসময় `.env`-এর `CHANNEL_ID` ব্যবহার করা হবে:
+>
 > ```env
 > ATTENDANCE_CHANNEL_ID=123456789012345678
 > DAILY_UPDATE_CHANNEL_ID=123456789012345679
@@ -257,6 +267,7 @@ Server-এ ৩টি সুনির্দিষ্ট চ্যানেল থ
 # 6. Phase 2 — Discord Bot Setup & Member Sync
 
 ### 6.1. Developer Portal Configuration
+
 1. [Discord Developer Portal](https://discord.com/developers/applications)-এ গিয়ে **New Application** তৈরি করতে হবে।
 2. **Bot** ট্যাবে গিয়ে **Add Bot** করতে হবে।
 3. **Privileged Gateway Intents** সেকশনে নিচের ইনটেন্টগুলো **ENABLE** করতে হবে:
@@ -265,6 +276,7 @@ Server-এ ৩টি সুনির্দিষ্ট চ্যানেল থ
    - ✅ **Guild Messages Intent** (`GUILD_MESSAGES`) — মেসেজ ইভেন্ট শোনার জন্য।
 
 ### 6.2. Guild Member Synchronization (Auto-Sync to DB):
+
 বট চালু হওয়ার সময় সম্পূর্ণ সার্ভারের মেম্বার ডাটাবেসে সিঙ্ক করবে, যাতে ফর্ম থেকে তৎক্ষণাৎ ইউজার ভেরিফাই করা যায়:
 
 ```typescript
@@ -304,18 +316,22 @@ export async function syncGuildMembers(client: Client, guildId: string) {
 ```text
 06:00 PM (Dhaka Time) ──> Bot unlocks #daily-update (SendMessages: TRUE)
                           + Sends "🟢 Channel is OPEN" Embed
-                          
+
 11:59 PM     ──> Bot locks #daily-update (SendMessages: FALSE)
                           + Sends "🔴 Channel is CLOSED" Embed
 ```
 
 ### Discord.js Implementation Pattern:
+
 ```typescript
 import { Client, TextChannel, EmbedBuilder } from 'discord.js';
 
 // Open Channel (06:00 PM)
-export async function openDailyUpdateChannel(client: Client, channelId: string) {
-  const channel = await client.channels.fetch(channelId) as TextChannel;
+export async function openDailyUpdateChannel(
+  client: Client,
+  channelId: string,
+) {
+  const channel = (await client.channels.fetch(channelId)) as TextChannel;
   if (!channel) return;
 
   await channel.permissionOverwrites.edit(channel.guild.roles.everyone, {
@@ -324,17 +340,22 @@ export async function openDailyUpdateChannel(client: Client, channelId: string) 
   });
 
   const openEmbed = new EmbedBuilder()
-    .setColor(0x00FF00)
+    .setColor(0x00ff00)
     .setTitle('🟢 Daily Update Channel is OPEN')
-    .setDescription('Please submit your daily learning updates before **11:59 PM** tonight.')
+    .setDescription(
+      'Please submit your daily learning updates before **11:59 PM** tonight.',
+    )
     .setTimestamp();
 
   await channel.send({ embeds: [openEmbed] });
 }
 
 // Close Channel (11:59 PM)
-export async function closeDailyUpdateChannel(client: Client, channelId: string) {
-  const channel = await client.channels.fetch(channelId) as TextChannel;
+export async function closeDailyUpdateChannel(
+  client: Client,
+  channelId: string,
+) {
+  const channel = (await client.channels.fetch(channelId)) as TextChannel;
   if (!channel) return;
 
   await channel.permissionOverwrites.edit(channel.guild.roles.everyone, {
@@ -342,9 +363,11 @@ export async function closeDailyUpdateChannel(client: Client, channelId: string)
   });
 
   const closeEmbed = new EmbedBuilder()
-    .setColor(0xFF0000)
+    .setColor(0xff0000)
     .setTitle('🔴 Daily Update Channel is CLOSED')
-    .setDescription('Submission time is over for today. The channel will reopen at **06:00 PM** tomorrow.')
+    .setDescription(
+      'Submission time is over for today. The channel will reopen at **06:00 PM** tomorrow.',
+    )
     .setTimestamp();
 
   await channel.send({ embeds: [closeEmbed] });
@@ -356,8 +379,9 @@ export async function closeDailyUpdateChannel(client: Client, channelId: string)
 # 8. Phase 4 — Web Attendance Endpoints
 
 ### 8.1. Endpoint 1: Verify Discord Username
+
 - **Route:** `GET /api/attendance/verify-user?username=rakib_dev`
-- **Logic:** 
+- **Logic:**
   1. ইউজারনেম নরমালাইজ করে ডাটাবেসের `users` টেবিলে খোঁজা হবে।
   2. ইউজার আজকের জন্য অলরেডি অ্যাটেনডেন্স দিয়েছে কিনা চেক করা হবে।
 - **Response (Found):**
@@ -376,6 +400,7 @@ export async function closeDailyUpdateChannel(client: Client, channelId: string)
   ```
 
 ### 8.2. Endpoint 2: Submit Attendance
+
 - **Route:** `POST /api/attendance/submit`
 - **Request Body (Zod Validated):**
   ```json
@@ -536,7 +561,7 @@ model ReminderRecipient {
 
 ```sql
 -- Single query to calculate today's status for all users
-SELECT 
+SELECT
     u.id,
     u.discord_username,
     u.discord_user_id,
@@ -545,18 +570,18 @@ SELECT
     u.email,
     CASE WHEN a.id IS NOT NULL THEN TRUE ELSE FALSE END AS has_attendance,
     CASE WHEN du.id IS NOT NULL THEN TRUE ELSE FALSE END AS has_daily_update,
-    CASE 
+    CASE
         WHEN a.id IS NOT NULL AND du.id IS NOT NULL THEN 'COMPLETE'
         WHEN a.id IS NOT NULL AND du.id IS NULL THEN 'MISSING_UPDATE'
         WHEN a.id IS NULL AND du.id IS NOT NULL THEN 'MISSING_ATTENDANCE'
         ELSE 'MISSING_BOTH'
     END AS status
 FROM users u
-LEFT JOIN attendances a 
+LEFT JOIN attendances a
     ON u.id = a.user_id AND a.attendance_date = :todayDate
 LEFT JOIN (
-    SELECT DISTINCT user_id, id 
-    FROM daily_updates 
+    SELECT DISTINCT user_id, id
+    FROM daily_updates
     WHERE message_date = :todayDate
 ) du ON u.id = du.user_id;
 ```
@@ -566,6 +591,7 @@ LEFT JOIN (
 # 12. Phase 8 — Safe Bulk DM Reminder System (BullMQ Queue)
 
 ### 12.1. The Discord DM Rate-Limit Challenge
+
 ২,০০০ ইউজারকে এক সেকেন্ডে DM পাঠাতে গেলে বট ব্যান হবে। তাই **BullMQ + Redis** দিয়ে রেট-লিমিট করা জব কিউ বাস্তবায়ন করা হবে:
 
 - **রেট লিমিট:** প্রতি সেকেন্ডে সর্বোচ্চ **১ থেকে ২টি DM** (~৬০-৮০ DM প্রতি মিনিটে)।
@@ -573,23 +599,28 @@ LEFT JOIN (
 - **Backoff & Retry:** কোনো কারণে নেটওয়ার্ক ফেইল করলে Exponential Backoff দিয়ে ৩ বার রিট্রাই করবে।
 
 ### 12.2. Handling Closed DMs (`Error 50007`) & Fallback Mechanism:
+
 ```typescript
 async function sendUserDM(botClient: Client, user: User, messageText: string) {
   try {
     if (!user.discordUserId) {
-      throw new Error("NO_DISCORD_USER_ID");
+      throw new Error('NO_DISCORD_USER_ID');
     }
 
     const discordUser = await botClient.users.fetch(user.discordUserId);
     await discordUser.send({
-      content: `⚠️ **Daily Update Reminder**\n\n${messageText}`
+      content: `⚠️ **Daily Update Reminder**\n\n${messageText}`,
     });
 
     return { success: true, status: 'DELIVERED' };
   } catch (error: any) {
     if (error.code === 50007) {
       // 50007: Cannot send messages to this user (DM is closed)
-      return { success: false, status: 'DM_CLOSED', error: 'User has DMs disabled' };
+      return {
+        success: false,
+        status: 'DM_CLOSED',
+        error: 'User has DMs disabled',
+      };
     }
     return { success: false, status: 'FAILED', error: error.message };
   }
@@ -597,6 +628,7 @@ async function sendUserDM(botClient: Client, user: User, messageText: string) {
 ```
 
 ### 12.3. Fallback Announcement for Closed DMs:
+
 রিমাইন্ডার কিউ শেষ হওয়ার পর যেসকল ইউজারের স্ট্যাটাস `DM_CLOSED`, তাদের আইডি নিয়ে `#daily-update-reminder` চ্যানেলে ব্যাচ মেনশন দিয়ে মেসেজ পাঠিয়ে দেওয়া হবে:
 
 ```text
@@ -609,6 +641,7 @@ async function sendUserDM(botClient: Client, user: User, messageText: string) {
 # 13. Phase 9 — Admin Dashboard Features
 
 ### 13.1. Overview Metrics (Cards):
+
 - **Total Users:** ৫,০০০
 - **Attendance Submitted:** ৪,৩২০ (৮৬.৪%)
 - **Daily Update Submitted:** ৩,০০০ (৬০.০%)
@@ -617,7 +650,9 @@ async function sendUserDM(botClient: Client, user: User, messageText: string) {
 - **Missing Both:** ৬৮০
 
 ### 13.2. Live Broadcast Progress Bar (via Server-Sent Events / SSE):
+
 অ্যাডমিন যখন **[Send Reminder]** বাটনে চাপ দেবেন, ড্যাশবোর্ডে লাইভ প্রগ্রেস বার আপডেট হবে:
+
 ```text
 Sending Reminders...
 [████████████████████░░░░░░░░░░] 64% (1,280 / 2,000)
@@ -625,6 +660,7 @@ Delivered: 1,210 | DM Closed: 65 | Failed: 5
 ```
 
 ### 13.3. Advanced Filter, Search & Export:
+
 - **Date Selector:** যেকোনো পূর্ববর্তী দিনের হিস্ট্রি দেখার সুবিধা।
 - **Status Filter:** `All`, `Complete`, `Missing Update`, `Missing Attendance`, `Missing Both`.
 - **Search Bar:** নাম, ফোন নম্বর, ইমেইল অথবা ইউজারনেম দিয়ে তাৎক্ষণিক ফিল্টার।
@@ -640,22 +676,22 @@ Delivered: 1,210 | DM Closed: 65 | Failed: 5
     │
     ├──> #daily-update চ্যানেল UNLOCK হবে
     └──> ঘোষণা দেওয়া হবে: "🟢 Channel is now open"
-    
+
 06:00 PM — 11:59 PM
     │
     ├──> স্টুডেন্টরা Web Form-এ attendance দিচ্ছে ──> Instant Verified & Saved to DB
     └──> স্টুডেন্টরা #daily-update-এ মেসেজ দিচ্ছে ─> Bot real-time DB-তে save করছে
-    
+
 11:59 PM
     │
     └──> শেষ মেসেজগুলো ইনজেস্ট হচ্ছে
-    
+
 12:00 AM Midnight
     │
     ├──> #daily-update চ্যানেল LOCK হবে (SendMessages: FALSE)
     ├──> ঘোষণা দেওয়া হবে: "🔴 Channel is now closed"
     └──> আজকের দিনের ফাইনাল স্ট্যাটাস ক্যালকুলেট হবে
-    
+
 12:05 AM
     │
     ├──> Admin ড্যাশবোর্ডে গিয়ে Missing Users লিস্ট দেখবে

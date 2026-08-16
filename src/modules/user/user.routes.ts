@@ -8,24 +8,13 @@ import { userValidation } from '@/modules/user/user.validation';
 
 const router = express.Router();
 
-// Create user profile
-router.post(
-  '/register',
-  validateRequest(userValidation.createUserValidationSchema),
-  userController.createUser,
-);
+// Get admin user profile based on logged in admin
+router.get('/me', auth(UserRole.ADMIN), userController.getUserProfile);
 
-// Get user profile based on logged in user
-router.get(
-  '/me',
-  auth(UserRole.ADMIN, UserRole.INSTRUCTOR, UserRole.STUDENT),
-  userController.getUserProfile,
-);
-
-// Update user email/username based on logged in user
+// Update admin profile based on logged in admin
 router.put(
   '/my-profile',
-  auth(UserRole.ADMIN, UserRole.INSTRUCTOR, UserRole.STUDENT),
+  auth(UserRole.ADMIN),
   validateRequest(userValidation.updateUserProfileValidationSchema),
   userController.updateUserProfile,
 );
