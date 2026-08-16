@@ -1,0 +1,50 @@
+// Enum
+
+enum UserRole {
+  ADMIN
+  INSTRUCTOR
+  STUDENT
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  BANNED
+}
+
+// User
+
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  phone        String?    @unique
+  password     String
+  role         UserRole   @default(STUDENT)
+  status       UserStatus @default(ACTIVE)
+  lastActiveAt DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relations
+  profile       Profile?
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+// Refresh Token
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}

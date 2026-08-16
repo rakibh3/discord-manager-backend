@@ -1,0 +1,218 @@
+{
+  "info": {
+    "name": "Discord Daily Attendance & Update Automation API",
+    "description": "Complete collection of API routes for the Discord Daily Attendance & Update Automation application.\n\n## Auto Token Management\nThe Login request automatically saves the access token as a collection variable. All authenticated requests use it via the collection-level pre-request script — no manual copy-paste needed.\n\n## Quick Start\n1. Register a user\n2. Login (token is auto-saved)\n3. All subsequent requests automatically include the token",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api",
+      "type": "string"
+    },
+    { "key": "accessToken", "value": "", "type": "string" },
+    { "key": "refreshToken", "value": "", "type": "string" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Auto-inject Authorization header for every request",
+          "const token = pm.collectionVariables.get('accessToken');",
+          "if (token) {",
+          "    pm.request.headers.upsert({",
+          "        key: 'Authorization',",
+          "        value: token",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "description": "Authentication endpoints. Login auto-saves the token for all other requests.",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"email\": \"user@example.com\",\n    \"password\": \"password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-save tokens so you never have to copy-paste",
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "if (jsonData.data && jsonData.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', jsonData.data.accessToken);",
+                  "    console.log('✅ accessToken saved to collection variables');",
+                  "}",
+                  "",
+                  "if (jsonData.data && jsonData.data.refreshToken) {",
+                  "    pm.collectionVariables.set('refreshToken', jsonData.data.refreshToken);",
+                  "    console.log('✅ refreshToken saved to collection variables');",
+                  "}",
+                  "",
+                  "// Basic assertions",
+                  "pm.test('Login successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.accessToken).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/refresh-token",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Uses the refreshToken cookie (set automatically by the Login response) to get a new accessToken."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "if (jsonData.data && jsonData.data.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', jsonData.data.accessToken);",
+                  "    console.log('✅ accessToken refreshed and saved');",
+                  "}",
+                  "",
+                  "pm.test('Token refreshed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "description": "User registration and profile management.",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/users/register",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"John Doe\",\n    \"email\": \"john@example.com\",\n    \"password\": \"password123\",\n    \"profilePhoto\": \"https://example.com/photo.jpg\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('User registered', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "    pm.expect(pm.response.json().success).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/users/me",
+            "description": "Requires auth. Returns the logged-in user's profile."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Profile retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().success).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/users/my-profile",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"John Updated\",\n    \"profilePhoto\": \"https://example.com/new-photo.jpg\",\n    \"bio\": \"Software Engineer and Writer\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires auth. Updates the logged-in user's profile."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Profile updated', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().success).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

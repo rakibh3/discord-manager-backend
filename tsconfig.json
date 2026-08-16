@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "outDir": "./dist",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ES2023",
+    "types": [
+      "node"
+    ],
+    "declaration": false,
+    "noUncheckedIndexedAccess": true,
+    "strict": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "ignoreDeprecations": "6.0",
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+    "baseUrl": "./",
+    "paths": {
+      "@/*": [
+        "src/*"
+      ],
+      "@generated/*": [
+        "generated/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "app.ts",
+    "server.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "generated/prisma"
+  ]
+}
