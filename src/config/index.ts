@@ -49,6 +49,59 @@ const parseSchedulerEnabled = (value: string | undefined): boolean => {
 };
 
 /**
+ * Whether THIS process consumes reminder DM jobs.
+ *
+ * Parsed exactly like `SCHEDULER_ENABLED`, but it exists for a different
+ * reason, and the difference is worth keeping straight. The scheduler flag is
+ * a correctness requirement: `node-cron` is process-local, so N replicas post N
+ * announcement embeds. The queue's rate limiter counts in Redis and is shared
+ * by every worker on the queue, so N workers still deliver within one DM
+ * budget. This flag is therefore operational — draining a node, or moving the
+ * worker to a dedicated process later — not load-bearing for safety.
+ *
+ * Unset means true. Only an explicit `false` (or `0`) disables it, and it gates
+ * only job *consumption*: the admin endpoints that start, read, and cancel
+ * broadcasts keep working on every process.
+ */
+const parseWorkerEnabled = (value: string | undefined): boolean => {
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized) return true;
+
+  return normalized !== 'false' && normalized !== '0';
+};
+
+/**
+ * DMs per second the reminder worker is allowed to send.
+ *
+ * Clamped rather than trusted. Golden Rule 4 exists because bursting DMs gets
+ * the bot rate limited and eventually banned — and because the bot is one
+ * process, that ban also takes down member sync and with it the attendance
+ * form's membership check. A typo here (`200` for `2`) would be that outage, so
+ * the range is enforced in code and a nonsense value falls back to the default
+ * instead of being honoured.
+ */
+const REMINDER_DM_RATE_DEFAULT = 2;
+const REMINDER_DM_RATE_MIN = 1;
+const REMINDER_DM_RATE_MAX = 5;
+
+const parseReminderDmRate = (value: string | undefined): number => {
+  if (!value?.trim()) return REMINDER_DM_RATE_DEFAULT;
+
+  const rate = Number(value.trim());
+
+  if (!Number.isFinite(rate)) return REMINDER_DM_RATE_DEFAULT;
+
+  const truncated = Math.trunc(rate);
+
+  if (truncated < REMINDER_DM_RATE_MIN || truncated > REMINDER_DM_RATE_MAX) {
+    return REMINDER_DM_RATE_DEFAULT;
+  }
+
+  return truncated;
+};
+
+/**
  * How many reverse proxies sit in front of the API.
  *
  * Handed to `app.set('trust proxy', …)` as an integer hop count, never as
@@ -82,6 +135,9 @@ export default {
   allowed_origins: parseOrigins(env.APP_URL, env.ATTENDANCE_FORM_URL),
   trust_proxy_hops: parseTrustProxyHops(env.TRUST_PROXY_HOPS),
   scheduler_enabled: parseSchedulerEnabled(env.SCHEDULER_ENABLED),
+  redis_url: env.REDIS_URL?.trim() || 'redis://localhost:6379',
+  reminder_worker_enabled: parseWorkerEnabled(env.REMINDER_WORKER_ENABLED),
+  reminder_dm_per_second: parseReminderDmRate(env.REMINDER_DM_PER_SECOND),
   env: env.NODE_ENV,
   admin: {
     emails: env.ADMIN_EMAILS

@@ -6,7 +6,7 @@ Defines how the Discord gateway client is configured, started, supervised, and s
 
 Isolation extends to the bot's own features. A privileged intent that only message ingestion needs must not be able to take down member sync, because the student-facing attendance form depends on the member directory. Degradation is therefore partial and reported, never silent.
 
-The process hosts a third subsystem alongside Express and the gateway client: the channel scheduler. It starts after the bot is ready, stops before the client is destroyed, and is isolated in both directions — neither it nor the bot may take the other down.
+The process hosts two further subsystems alongside Express and the gateway client: the channel scheduler and the reminder DM queue worker. Both start only once the bot is ready, and both stop before the client is destroyed — the worker so that no delivery is sent into a closing connection. Each is isolated in every direction: neither may take down the bot, the API, or the other.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ The system SHALL create a single shared `discord.js` `Client` configured with th
 
 ### Requirement: Bot lifecycle is isolated from the HTTP server
 
-The system SHALL start the bot alongside the Express server in the same process, and a Discord failure SHALL NOT prevent the API from serving traffic. The channel scheduler SHALL be started in that same process after the bot, and SHALL be isolated in both directions: a scheduler failure SHALL NOT stop the HTTP server or the gateway connection, and a bot failure SHALL NOT prevent the process from starting.
+The system SHALL start the bot alongside the Express server in the same process, and a Discord failure SHALL NOT prevent the API from serving traffic. The channel scheduler and the reminder queue worker SHALL be started in that same process after the bot, and each SHALL be isolated in every direction: a failure in the scheduler or the worker SHALL NOT stop the HTTP server, the gateway connection, or each other, and a bot failure SHALL NOT prevent the process from starting.
 
 #### Scenario: Successful startup
 
@@ -55,6 +55,7 @@ The system SHALL start the bot alongside the Express server in the same process,
 - **THEN** the HTTP server begins listening
 - **AND** the bot logs in and reports the authenticated bot tag once ready
 - **AND** the channel scheduler is started once the bot is ready
+- **AND** the reminder queue worker is started once the bot is ready
 
 #### Scenario: Login fails
 
@@ -79,10 +80,17 @@ The system SHALL start the bot alongside the Express server in the same process,
 - **THEN** the error is logged
 - **AND** the HTTP server keeps serving and the gateway connection is unaffected
 
+#### Scenario: Queue worker start fails
+
+- **WHEN** starting the reminder queue worker fails, for example because its datastore is unreachable
+- **THEN** the error is logged
+- **AND** the HTTP server, the gateway connection, message ingestion, and the channel scheduler are unaffected
+
 #### Scenario: Bot never connects
 
 - **WHEN** the bot fails to log in
 - **THEN** the scheduler does not attempt channel operations against a disconnected client, and reports itself as unable to act rather than failing repeatedly in silence
+- **AND** the queue worker is not started, so no job is consumed and failed against a disconnected client
 
 ### Requirement: A missing Message Content intent degrades ingestion, not member sync
 
@@ -128,13 +136,14 @@ The system SHALL expose whether daily-update ingestion is active, so that a sile
 
 ### Requirement: Bot shuts down gracefully
 
-The system SHALL destroy the Discord client, stop the channel scheduler, and disconnect Prisma when the process receives a termination signal.
+The system SHALL close the reminder queue worker, destroy the Discord client, stop the channel scheduler, and disconnect Prisma when the process receives a termination signal. The worker SHALL be closed before the client is destroyed, so no delivery is sent into a closing connection.
 
 #### Scenario: SIGTERM received
 
 - **WHEN** the process receives `SIGINT` or `SIGTERM`
 - **THEN** the HTTP server stops accepting new connections
 - **AND** the scheduler's timed jobs are stopped so no job fires during shutdown
+- **AND** the reminder queue worker is closed, allowing a delivery in flight to finish, before the Discord client is destroyed
 - **AND** the Discord client is destroyed
 - **AND** the Prisma connection is closed before the process exits
 
@@ -155,7 +164,7 @@ The system SHALL confirm the bot is a member of the configured guild before any 
 
 ### Requirement: Channel permission management is an operational prerequisite
 
-The bot SHALL require the Manage Roles permission on the daily-update channel in order to edit its `@everyone` permission overwrite. The system SHALL surface a permission failure to administrators rather than only logging it, because a bot that cannot edit the overwrite leaves the submission window unenforced with no other visible symptom.
+The bot SHALL require the Manage Roles permission on the daily-update channel in order to edit its `@everyone` permission overwrite, and the Send Messages permission on the reminder channel in order to post the closed-DM fallback announcement. The system SHALL surface a permission failure to administrators rather than only logging it, because in both cases the bot keeps running and the only other symptom is something that silently never happens — an unenforced submission window, or a fallback announcement that reaches nobody.
 
 #### Scenario: Permission missing when a channel operation runs
 
@@ -167,3 +176,10 @@ The bot SHALL require the Manage Roles permission on the daily-update channel in
 
 - **WHEN** the bot holds Manage Roles on the channel
 - **THEN** open and lock operations succeed and report no error
+
+#### Scenario: Permission missing on the reminder channel
+
+- **WHEN** the fallback announcement is rejected by Discord for missing permissions
+- **THEN** the error is logged naming the required permission and the reminder channel
+- **AND** it is reported through the administrator-facing reminder status
+- **AND** the reminder DMs that were already delivered are unaffected

@@ -15,5 +15,34 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  # Backing store for the BullMQ reminder DM queue, and nothing else.
+  #
+  # Deliberately not a dependency of the API, the bot, ingestion, or the channel
+  # scheduler: with Redis down the whole application still serves, and only
+  # reminder broadcasts are refused. See src/lib/queue/connection.ts.
+  #
+  # `appendonly` is on because the queue holds real work — a broadcast partway
+  # through 5,000 DMs must survive a container restart, or the members already
+  # reminded get reminded twice when it is re-run by hand.
+  redis:
+    image: redis:7-alpine
+    container_name: discord_manager_redis
+    restart: unless-stopped
+
+    command: ['redis-server', '--appendonly', 'yes']
+
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+
+    volumes:
+      - redis_data:/data
+
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   postgres_data:
+  redis_data:

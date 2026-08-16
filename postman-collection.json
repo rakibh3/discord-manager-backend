@@ -24,6 +24,18 @@
       "key": "attendanceUsername",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "reminderDate",
+      "value": "",
+      "type": "string",
+      "description": "Dhaka date (YYYY-MM-DD) a broadcast targets. Required - never inferred."
+    },
+    {
+      "key": "reminderId",
+      "value": "",
+      "type": "string",
+      "description": "Set automatically by the Send Reminder Broadcast request."
     }
   ],
   "event": [
@@ -783,6 +795,202 @@
             },
             "description": "Golden Rule 3: a handle absent from the guild can never submit. 404 here rather than the verify endpoint's 200, because this is a genuine failure to act rather than a question being answered.\n\nA departed member gets this identical response."
           }
+        }
+      ]
+    },
+    {
+      "name": "Reminders",
+      "description": "Rate-limited reminder DM broadcasts (BullMQ + Redis).\n\nEvery route requires admin auth. POST /send DMs thousands of students and CANNOT be undone, so the intended flow is: GET /targets to confirm the count, then POST /send, then poll GET /:id for progress.\n\nDelivery is paced at REMINDER_DM_PER_SECOND (default 2), so a 5,000-member broadcast takes ~40 minutes. That is Golden Rule 4, not a performance bug.",
+      "item": [
+        {
+          "name": "Get Reminder Targets",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders/targets?date={{reminderDate}}",
+            "description": "Who WOULD be reminded for a Dhaka date: members currently in the guild with no daily update that day. Sends nothing.\n\n`date` is required and never inferred - an inferred date near midnight would remind the wrong day's members with nothing looking wrong. A future date is rejected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Targets previewed without sending', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('targetCount');",
+                  "    pm.expect(jsonData.data.targets).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Reminder Broadcast",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/reminders/send",
+            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast for that date may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"date\": \"{{reminderDate}}\",\n  \"message\": \"Please submit your daily update for yesterday.\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Broadcast accepted, not completed', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('id');",
+                  "    pm.expect(jsonData.data.queuedJobs).to.eql(jsonData.data.targetCount);",
+                  "});",
+                  "",
+                  "// Keep the id for the progress, recipients and cancel requests.",
+                  "if (jsonData.data && jsonData.data.id) {",
+                  "    pm.collectionVariables.set('reminderId', jsonData.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Broadcast Progress",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders/{{reminderId}}",
+            "description": "Live progress for one broadcast. This is what Phase 7's SSE endpoint will stream.\n\nThe counts are read from the recipient rows, which are the source of truth - not from the cached counters on the session row. `outstanding` is how many are still unattempted."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Progress reported', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data).to.have.property('status');",
+                  "    const d = jsonData.data;",
+                  "    pm.expect(d.delivered + d.dmClosed + d.failed + d.outstanding).to.eql(d.targetCount);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Broadcast Recipients",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders/{{reminderId}}/recipients?page=1&limit=50",
+            "description": "Per-recipient delivery outcomes - the audit view. Add `status=DELIVERED` | `DM_CLOSED` | `FAILED` | `PENDING` to filter.\n\nPENDING after a broadcast ended means never attempted (for example after a cancel), NOT failed. Contact details are deliberately not exposed here."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Recipients paged', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().meta).to.have.property('total');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Broadcasts",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders?page=1&limit=20",
+            "description": "Broadcast history, newest first, with the admin who started each run. The originating admin may be null if that account was later deleted - the audit trail outlives it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('History returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel Broadcast",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/reminders/{{reminderId}}/cancel",
+            "description": "Stops a broadcast in flight - the stop button for a message sent with a typo.\n\nThe status write IS the cancel: the worker re-reads it before every send, so queued and in-flight jobs stop delivering even though jobs already started cannot be removed from Redis. Already-delivered recipients keep their outcome; the rest stay PENDING because they were never attempted. Cancelling a finished broadcast is a 409."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Broadcast cancelled', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data.status).to.eql('CANCELLED');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Queue Status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders/status",
+            "description": "Queue and worker health.\n\nCheck `lastFallback` first when members with closed DMs say they were never told: a missing \"Send Messages\" permission on #daily-update-reminder delivers every DM successfully and silently reaches nobody who needed the fallback. It surfaces here and nowhere else.\n\n`workerRunning` is false when the Discord bot never connected - a job cannot DM without a gateway connection, so the worker waits for it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Queue status reported', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data).to.have.property('redisConnected');",
+                  "    pm.expect(jsonData.data).to.have.property('workerRunning');",
+                  "});",
+                  "",
+                  "// A silently failing fallback is the failure mode this field exists for.",
+                  "pm.test('Last fallback announcement did not fail', function () {",
+                  "    const fb = jsonData.data.lastFallback;",
+                  "    if (fb) { pm.expect(fb.ok, fb.error || '').to.be.true; }",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

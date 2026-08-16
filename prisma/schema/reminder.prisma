@@ -9,12 +9,23 @@ enum ReminderStatus {
   PENDING
   PROCESSING
   COMPLETED
+  // A broadcast an admin deliberately stopped. Kept distinct from FAILED
+  // because the two demand opposite responses: CANCELLED is a decision and
+  // needs nothing, FAILED is a fault to investigate. Collapsing them would
+  // bury a stalled worker among the runs somebody meant to stop.
+  CANCELLED
   FAILED
 }
 
 enum ReminderDeliveryStatus {
   // A recipient row exists from the moment the broadcast is queued; it only
   // reaches a terminal state when its job actually runs.
+  //
+  // Recipients left PENDING after a cancellation are CORRECT and must stay that
+  // way: they were never attempted, and rewriting them to FAILED would claim a
+  // delivery was tried when nothing was sent. `finalizeReminderLog` therefore
+  // only counts them — it never updates them — and a cancelled session reports
+  // "N never attempted" rather than "N failed".
   PENDING
   DELIVERED
   DM_CLOSED // Discord error 50007 — the fallback channel mention targets these

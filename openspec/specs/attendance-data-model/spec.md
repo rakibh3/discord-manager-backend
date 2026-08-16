@@ -95,7 +95,7 @@ The system SHALL store each ingested `#daily-update` message once. The Discord m
 
 ### Requirement: Reminder broadcasts record their outcome per recipient
 
-The system SHALL persist each reminder broadcast as one session record with running delivery counts, and one recipient record per targeted member holding that member's individual delivery outcome.
+The system SHALL persist each reminder broadcast as one session record with running delivery counts, and one recipient record per targeted member holding that member's individual delivery outcome. A session SHALL be able to end in a cancelled state, distinct from a failed one, so that a broadcast an administrator deliberately stopped is not recorded the same way as one that stalled.
 
 #### Scenario: Broadcast session created
 
@@ -122,6 +122,17 @@ The system SHALL persist each reminder broadcast as one session record with runn
 
 - **WHEN** a broadcast session record is deleted
 - **THEN** its recipient records are removed with it
+
+#### Scenario: Broadcast cancelled
+
+- **WHEN** an administrator stops a broadcast that is still running
+- **THEN** the session is recorded as cancelled
+- **AND** recipients never attempted remain in the not-yet-attempted state rather than being recorded as failed
+
+#### Scenario: Cancelled distinguished from failed
+
+- **WHEN** a broadcast that was cancelled and a broadcast that ended with recipients never attempted are both read
+- **THEN** their statuses are distinguishable, because one was a decision and the other is a fault to investigate
 
 ### Requirement: History survives a member leaving the guild
 

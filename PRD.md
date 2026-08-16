@@ -785,9 +785,22 @@ Phase 5: Automated Scheduler (Asia/Dhaka)
 ├── [x] Manual override: POST /api/schedule/daily-update/open | /lock
 
 Phase 6: BullMQ Queue & Rate-Limited DM Reminders
-├── [ ] Redis setup & BullMQ Queue configuration
-├── [ ] Rate limiter (1-2 DMs per second)
-├── [ ] Closed DMs (Error 50007) error handling & fallback channel mention
+├── [x] Redis setup & BullMQ Queue configuration (docker compose service; Redis
+│       backs the reminder queue ONLY — with it down the API, bot, ingestion and
+│       channel scheduler all keep working and broadcasts are refused with a 503)
+├── [x] Rate limiter (REMINDER_DM_PER_SECOND, default 2, clamped 1-5). One job
+│       per recipient, so the unit of retry is the unit of delivery; the
+│       limiter's counter lives in Redis and is shared across workers.
+├── [x] Closed DMs (Error 50007) error handling & fallback channel mention
+│       (chunked, with allowedMentions.parse: [] so it can never become an
+│       @everyone). Needs "Send Messages" on #daily-update-reminder.
+├── [x] Admin API at /api/reminders: preview targets, send, live progress,
+│       recipient audit, history, cancel-in-flight, and queue health.
+│       `date` is REQUIRED on send — never inferred, because an inferred date
+│       near midnight would remind the wrong day's members.
+└── [ ] SSE progress stream — deliberately deferred to Phase 7, where it is
+        designed alongside the rest of the dashboard API. The polled progress
+        read (GET /api/reminders/:id) is what it will wrap.
 
 Phase 7: Admin Dashboard (Frontend & API)
 ├── [ ] JWT-authenticated API endpoints for metrics & user lists

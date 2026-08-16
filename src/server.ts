@@ -7,6 +7,12 @@ import {
   stopDiscordBot,
 } from '@/lib/discord/client';
 import { prisma } from '@/lib/prisma';
+import { closeRedis, connectRedis } from '@/lib/queue/connection';
+import { closeReminderQueue } from '@/lib/queue/reminder.queue';
+import {
+  startReminderWorker,
+  stopReminderWorker,
+} from '@/lib/queue/reminder.worker';
 import {
   startChannelScheduler,
   stopChannelScheduler,
@@ -31,9 +37,18 @@ const shutdown = async (signal: string) => {
     server.close(() => resolve());
   });
 
-  // Before the client is destroyed, so no job can fire into a dying connection.
+  // Both before the client is destroyed, so nothing fires into a dying
+  // connection. The worker is closed rather than killed: `close()` lets a DM
+  // already in flight finish, and anything still queued stays in Redis for the
+  // next process to pick up.
   await stopChannelScheduler();
+  await stopReminderWorker();
   await stopDiscordBot();
+
+  // Redis last of the queue pieces — the worker and queue both hold it.
+  await closeReminderQueue();
+  await closeRedis();
+
   await prisma.$disconnect();
 
   logger.info('Shutdown complete');
@@ -49,6 +64,17 @@ async function main() {
       logger.info(`Server is running on http://localhost:${PORT}`);
     });
 
+    // Redis backs the reminder queue and nothing else, so this is reported and
+    // never fatal: with it down the API, the bot, ingestion, and the scheduler
+    // all run normally and only reminder broadcasts are refused.
+    void connectRedis().then((connected) => {
+      if (!connected) {
+        logger.warn(
+          'Redis is not reachable. Reminder broadcasts will be refused; everything else is unaffected.',
+        );
+      }
+    });
+
     // Started after listen() and not awaited: the initial member fetch takes
     // tens of seconds and must never delay the API becoming ready. Failures
     // are handled inside startDiscordBot, which is why nothing escapes here.
@@ -60,12 +86,19 @@ async function main() {
         // running, which is the honest answer.
         if (!started) {
           logger.warn(
-            'Channel scheduler not started: the Discord bot is not running.',
+            'Channel scheduler and reminder worker not started: the Discord bot is not running.',
           );
           return;
         }
 
-        onDiscordReady(() => void startChannelScheduler());
+        onDiscordReady(() => {
+          void startChannelScheduler();
+
+          // A job cannot deliver a DM without a connected client, so the worker
+          // waits for the same signal. Starting it earlier would only pull jobs
+          // it could not execute and burn their retry attempts.
+          startReminderWorker();
+        });
       })
       .catch((error) => {
         logger.error(
