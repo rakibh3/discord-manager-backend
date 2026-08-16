@@ -2,17 +2,28 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { Application } from 'express';
 
+import config from '@/config';
 import errorHandler from '@/errors/globalErrorHandler';
 import { notFoundRoute } from '@/errors/notFound';
+import { attendanceRouter } from '@/modules/attendance/attendance.routes';
 import { authRouter } from '@/modules/auth/auth.routes';
 import { discordRouter } from '@/modules/discord/discord.routes';
 import { userRouter } from '@/modules/user/user.routes';
 
 const app: Application = express();
 
+// Client IP resolution, which the public rate limiters count against.
+// Set as an integer hop count or not at all — never `true`, which would let a
+// caller forge `X-Forwarded-For` and evade every budget. See config/index.ts.
+if (config.trust_proxy_hops !== undefined) {
+  app.set('trust proxy', config.trust_proxy_hops);
+}
+
 app.use(
   cors({
-    origin: process.env.APP_URL,
+    // Explicit allowlist: the admin dashboard and the public attendance form
+    // are separate deployments. Never `'*'` or `true` alongside credentials.
+    origin: config.allowed_origins,
     credentials: true,
   }),
 );
@@ -24,6 +35,9 @@ app.use(cookieParser());
 app.use('/api/auth', authRouter);
 app.use('/api/users', userRouter);
 app.use('/api/discord', discordRouter);
+// The only unauthenticated router in the application — students have no
+// account to authenticate with. See attendance.routes.ts.
+app.use('/api/attendance', attendanceRouter);
 
 app.get('/', (req, res) => {
   res.send('Hello, World!');

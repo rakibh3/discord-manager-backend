@@ -11,7 +11,8 @@
       "type": "string"
     },
     { "key": "accessToken", "value": "", "type": "string" },
-    { "key": "refreshToken", "value": "", "type": "string" }
+    { "key": "refreshToken", "value": "", "type": "string" },
+    { "key": "attendanceUsername", "value": "", "type": "string" }
   ],
   "event": [
     {
@@ -226,7 +227,7 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/discord/sync/status",
-            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), and the last sync summary."
+            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), the last sync summary, and whether #daily-update ingestion is running. `dailyUpdate.ingestionEnabled` is false when the bot fell back to a login without the Message Content Intent — member sync still works, but no daily updates are being recorded."
           },
           "event": [
             {
@@ -241,12 +242,19 @@
                   "    pm.expect(jsonData.success).to.be.true;",
                   "    pm.expect(jsonData.data.bot).to.have.property('connected');",
                   "    pm.expect(jsonData.data.members).to.have.property('active');",
+                  "    pm.expect(jsonData.data.dailyUpdate).to.have.property('ingestionEnabled');",
                   "});",
                   "",
                   "// The departure guard trips when a member fetch looks truncated,",
                   "// which almost always means the Server Members privileged intent is off.",
                   "if (jsonData.data && jsonData.data.lastSync && jsonData.data.lastSync.guardTripped) {",
                   "    console.warn('⚠️ Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
+                  "}",
+                  "",
+                  "// Ingestion off is invisible from outside except here: the dashboard would",
+                  "// simply show every member as missing their daily update.",
+                  "if (jsonData.data && jsonData.data.dailyUpdate && !jsonData.data.dailyUpdate.ingestionEnabled) {",
+                  "    console.warn('⚠️ Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
                   "}"
                 ]
               }
@@ -284,6 +292,268 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "Attendance (Public)",
+      "description": "The web attendance form's two endpoints. These are the ONLY routes in the API with no auth middleware - students are not `users` rows and have no credential to present. Two things stand in for authentication: the handle must resolve to a member currently in the guild, and the caller must be within its per-IP budget (60/min on verify-user, 5/15min on submit). Set the {{attendanceUsername}} variable to a real synced member's handle before running these.",
+      "item": [
+        {
+          "name": "Verify Discord Username - Found",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Handle verified as a current member', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.verified).to.be.true;",
+                  "    pm.expect(jsonData.data.member).to.not.be.null;",
+                  "    pm.expect(jsonData.data.attendanceDate).to.match(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                  "});",
+                  "",
+                  "// `verified` and `alreadySubmitted` live INSIDE `data`, not at the top",
+                  "// level as the PID sketches them - sendResponse owns the envelope.",
+                  "pm.test('Rate limit headers present', function () {",
+                  "    pm.expect(pm.response.headers.has('RateLimit-Limit')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-user?username={{attendanceUsername}}",
+            "description": "Live membership check backing the form's verified badge. The handle is normalized first (trimmed, leading @ stripped, lowercased), so ` @Rakib_Dev ` and `rakib_dev` resolve identically.\n\nReturns 200 with `data.verified` true/false - not 404 - because 'not found' is the routine answer the form has to render either way. `data.alreadySubmitted` reports whether this member already has an attendance row for today's Asia/Dhaka date, which `data.attendanceDate` names."
+          }
+        },
+        {
+          "name": "Verify Discord Username - Not a Member",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Unknown handle answered, not errored', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data.verified).to.be.false;",
+                  "    pm.expect(jsonData.data.member).to.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-user?username=definitely_not_a_member_9999",
+            "description": "A well-formed handle that no active member holds. Still 200; `data.verified` is false and `data.member` is null.\n\nA member who LEFT the guild gets this same response. That collapse is deliberate - both outcomes block submission anyway, and keeping them indistinguishable means this endpoint cannot be used to confirm that a particular person used to be in the server."
+          }
+        },
+        {
+          "name": "Verify Discord Username - Invalid Format",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Malformed handle rejected before any lookup', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(pm.response.json().success).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-user?username=rakib..dev",
+            "description": "A format error is a 400 and a DIFFERENT outcome from 'not a member' (200, verified:false). The form needs to tell them apart to say anything useful.\n\nRejected: consecutive periods, anything outside [a-z0-9_.], under 2 or over 32 characters, discriminator tags like `#0001`.\n\nACCEPTED: a leading or trailing `_` or `.` - `itzazad_`, `.rabbil`, `shahriarratul.`. 115 of 2189 live members (5.3%) hold such handles. Never tighten the regex to forbid them."
+          }
+        },
+        {
+          "name": "Submit Attendance",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Attendance recorded', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.attendanceDate).to.match(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                  "});",
+                  "",
+                  "// Re-run this request to see the duplicate refusal (409)."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/attendance/submit",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"rakib@example.com\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Records today's attendance. Exactly four fields; anything else is stripped.\n\nValidation: `name` >= 3 chars, letters and spaces only (Unicode, so Bengali names pass); `phone` as 01XXXXXXXXX or +8801XXXXXXXXX; `email` well-formed; `discordUsername` per the official Discord standard.\n\nMembership is re-verified here even if verify-user was called first. That endpoint is a UI affordance - nothing forces a client to call it, and a member can leave the guild between the two requests. Golden Rule 3 is enforced on this path, not in the browser.\n\nOn success the submitted phone and email are also carried onto the member's directory entry, in the same transaction as the insert."
+          }
+        },
+        {
+          "name": "Submit Attendance - Duplicate (409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Second submission today refused as a duplicate', function () {",
+                  "    pm.response.to.have.status(409);",
+                  "    pm.expect(jsonData.success).to.be.false;",
+                  "    pm.expect(jsonData.message).to.include('already submitted');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/attendance/submit",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"rakib@example.com\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Run 'Submit Attendance' first, then this. The message names the Dhaka date already submitted for.\n\nThe refusal comes from the (member_id, attendance_date) unique constraint, not from a read-then-write check - a pre-check would let two simultaneous submissions both through (Golden Rule 7). Fire two of these at once and exactly one row will exist; the loser gets this same 409.\n\nThe contact-detail update is in the same transaction as the insert, so a duplicate leaves the member's directory entry untouched."
+          }
+        },
+        {
+          "name": "Submit Attendance - Not a Member (404)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Non-member cannot submit', function () {",
+                  "    pm.response.to.have.status(404);",
+                  "    pm.expect(pm.response.json().success).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/attendance/submit",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ghost User\",\n  \"phone\": \"01711000000\",\n  \"email\": \"ghost@example.com\",\n  \"discordUsername\": \"definitely_not_a_member_9999\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Golden Rule 3: a handle absent from the guild can never submit. 404 here rather than the verify endpoint's 200, because this is a genuine failure to act rather than a question being answered.\n\nA departed member gets this identical response."
+          }
         }
       ]
     }

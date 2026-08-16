@@ -24,17 +24,40 @@ export type CreateAttendanceInput = {
 };
 
 /**
- * Inserts one submission.
+ * Inserts one submission and carries the submitted contact details onto the
+ * member's directory entry, in a single transaction.
+ *
+ * The two writes are one unit because a member whose phone and email were
+ * updated by a submission that was then rejected as a duplicate would be a
+ * silent inconsistency — the dashboard would show contact details for a day the
+ * member has no attendance on. The insert runs first, so a duplicate aborts the
+ * transaction before `discord_members` is touched at all.
  *
  * A duplicate for the same member and date raises Prisma P2002 on
  * `attendances_member_id_attendance_date_key`, and that is deliberately left to
- * propagate: `globalErrorHandler` already shapes P2002 as a duplicate response.
- * Checking for an existing row first would not be safe anyway — two concurrent
- * submissions would both pass the check. The constraint is the enforcement point.
+ * propagate. Checking for an existing row first would not be safe anyway — two
+ * concurrent submissions would both pass the check. The constraint is the
+ * enforcement point (Golden Rule 7). Translating that P2002 into a message
+ * naming the date is the service's job, not this layer's.
+ *
+ * Note the asymmetry, which is intended: the attendance row keeps `name`,
+ * `email`, and `phone` exactly as submitted that day, while the directory entry
+ * always carries the newest values. Updating a member's email must never
+ * rewrite what an earlier day's report says they submitted.
  */
-const createAttendance = async (
+const createAttendanceWithMemberContact = async (
   input: CreateAttendanceInput,
-): Promise<Attendance> => prisma.attendance.create({ data: input });
+): Promise<Attendance> =>
+  prisma.$transaction(async (tx) => {
+    const attendance = await tx.attendance.create({ data: input });
+
+    await tx.discordMember.update({
+      where: { id: input.memberId },
+      data: { email: input.email, phone: input.phone },
+    });
+
+    return attendance;
+  });
 
 /**
  * The submission for one member on one day, or `null`.
@@ -77,7 +100,7 @@ const listAttendanceByDate = async (attendanceDate: string) =>
 // other six.
 
 export const attendanceRepository = {
-  createAttendance,
+  createAttendanceWithMemberContact,
   findAttendanceByMemberAndDate,
   listAttendanceByDate,
 };

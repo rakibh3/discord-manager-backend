@@ -343,7 +343,7 @@ client.on('guildMemberRemove', async (member) => {
   if (member.user.bot) return;
 
   const normalizedUsername = normalizeDiscordUsername(member.user.username);
-  
+
   // Soft handling: ইউজারকে ডিলিট না করে শুধু লগ করা হবে,
   // যাতে তার আগের attendance ও daily update হিস্ট্রি সংরক্ষিত থাকে।
   console.log(`[MemberSync] Member left: ${normalizedUsername} (${member.id})`);
@@ -763,14 +763,15 @@ Phase 2: Database & Prisma Architecture
 ├── [x] Efficient Indexes & Repository helper queries
 
 Phase 3: Web Attendance Endpoints & Live Verification
-├── [ ] GET /api/attendance/verify-user?username=... (Server membership & duplicate check)
-├── [ ] POST /api/attendance/submit (Validate Name, Phone, Email, Discord Username & Insert)
-├── [ ] Next.js / React Attendance Form with Live Verified Badge
+├── [x] GET /api/attendance/verify-user?username=... (Server membership & duplicate check)
+├── [x] POST /api/attendance/submit (Validate Name, Phone, Email, Discord Username & Insert)
+├── [x] Per-IP rate limiting on both public endpoints + CORS origin allowlist
+├── [ ] Next.js / React Attendance Form with Live Verified Badge  (frontend repo, not this one)
 
 Phase 4: Real-time Daily Update Collection
-├── [ ] messageCreate listener for #daily-update
-├── [ ] Username normalization & real-time message insert
-├── [ ] Success reaction emoji (✅) on message
+├── [x] messageCreate listener for #daily-update
+├── [x] Snowflake-based author resolution & real-time message insert
+├── [x] Success reaction emoji (✅) on message
 
 Phase 5: Automated Scheduler (Asia/Dhaka)
 ├── [ ] 06:00 PM Cron: Unlock channel & send opening embed

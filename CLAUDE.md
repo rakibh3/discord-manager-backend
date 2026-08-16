@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Express 5 + TypeScript + Prisma 7 (PostgreSQL) REST API for a Discord daily-attendance / update automation admin dashboard. Authentication is strictly for administrators (no regular user login/registration; students/members submit attendance directly via web form). Auth, user, and the Discord bot / member-sync modules exist. The attendance domain has its **persistence layer only** — schema, migration, and `src/repositories/`; there are no attendance HTTP endpoints, no `messageCreate` ingestion, no scheduler, and no reminder queue yet.
+Express 5 + TypeScript + Prisma 7 (PostgreSQL) REST API for a Discord daily-attendance / update automation admin dashboard. Authentication is strictly for administrators (no regular user login/registration; students/members submit attendance directly via web form). Auth, user, the Discord bot / member-sync modules, the public attendance endpoints, and `#daily-update` message ingestion exist. Still missing from the attendance domain: the channel open/lock scheduler, the reminder queue, and the dashboard endpoints.
 
 ## Commands
 
@@ -41,14 +41,14 @@ No test framework is configured.
 
 ESM (`"type": "module"`) with path aliases `@/*` → `src/*` and `@generated/*` → `generated/*`.
 
-`src/server.ts` connects Prisma, listens, **then** starts the Discord bot (unawaited) and registers `SIGINT`/`SIGTERM` shutdown; `src/app.ts` wires CORS (credentials, origin `APP_URL`), JSON/urlencoded/cookie parsers, routers under `/api/auth`, `/api/users`, and `/api/discord`, then `notFoundRoute` and `globalErrorHandler` last.
+`src/server.ts` connects Prisma, listens, **then** starts the Discord bot (unawaited) and registers `SIGINT`/`SIGTERM` shutdown; `src/app.ts` sets `trust proxy` (see below), wires CORS (credentials, origin = the `APP_URL` + `ATTENDANCE_FORM_URL` allowlist), JSON/urlencoded/cookie parsers, routers under `/api/auth`, `/api/users`, `/api/discord`, and `/api/attendance`, then `notFoundRoute` and `globalErrorHandler` last.
 
 ### Module pattern
 
 Each feature under `src/modules/<name>/` is four files with fixed roles, each exporting a single named object (`authService`, `userController`, …):
 
-- `*.routes.ts` — composes `validateRequest(schema)` and `auth(...roles)` middleware, exports `<name>Router`.
-- `*.validation.ts` — Zod v4 schemas validating **`req.body` only**.
+- `*.routes.ts` — composes `validateRequest(schema)` / `validateQuery(schema)` and `auth(...roles)` middleware, exports `<name>Router`.
+- `*.validation.ts` — Zod v4 schemas. `validateRequest` validates `req.body`, `validateQuery` validates `req.query`.
 - `*.controller.ts` — wrapped in `catchAsync`, reads `req.user`, returns via `sendResponse(res, { success, statusCode, message, data, meta? })`. All responses go through `sendResponse`; controllers never touch Prisma.
 - `*.service.ts` — business rules; throws `AppError(statusCode, message)`. Owns Prisma directly for auth/user/discord, and delegates to `src/repositories/` for the attendance domain (see below).
 
@@ -61,6 +61,7 @@ Attendance-domain data access lives in `src/repositories/*.repository.ts`, not i
 The rule: **controllers never touch Prisma; services own business rules and throw `AppError`; repositories own Prisma and nothing else** — no `AppError`, no HTTP status codes, no `req`. A repository returns data or `null`; deciding that a `null` is a 404 stays in the service.
 
 - `attendance.repository.ts`, `dailyUpdate.repository.ts`, `reminder.repository.ts` — writes and per-member reads.
+- `member.repository.ts` — `findActiveMemberByUsername`, the directory lookup behind form verification. Filters `isInGuild: true` in the query and returns `null` for both "no row" and "member left"; the collapse is deliberate, so the public endpoint cannot be used to confirm that someone used to be in the server. Expects an already-normalized handle and matches it exactly — never with `startsWith`/`contains`, which compile to SQL `LIKE`, where `_` is a single-character wildcard and would match most of the directory.
 - `dailyStatus.repository.ts` — the dashboard aggregation, in `$queryRaw` because a computed status column is not expressible in Prisma's fluent API. Sort column and direction come from a closed `Prisma.sql` allowlist; every other value is a bound parameter.
 
 Dashboard figures (total members, attendance submitted, …) belong **only** to `getDailyStatusCounts`. They interlock and must agree, so a convenience `count()` elsewhere is drift, not a shortcut — a plain `prisma.attendance.count()` would silently include departed members and disagree.
@@ -75,22 +76,56 @@ Because `$queryRaw` does not break at compile time when a column is renamed, eac
 - Only `ADMIN` role exists (`UserRole.ADMIN` in Prisma and `UserRole = 'ADMIN'` in `src/interface/index.ts`). Regular users/students do not have user accounts.
 - DB-row expiry for refresh tokens is hardcoded to 7 days in `auth.service.ts`, independent of `JWT_REFRESH_EXPIRES_IN`.
 
+### The public attendance endpoints
+
+`src/modules/attendance/` holds the **only two routes with no `auth()` middleware**: `GET /api/attendance/verify-user?username=…` and `POST /api/attendance/submit`. That is not an oversight — students are not `users` rows, so the form has no credential to present. Anything added to `attendanceRouter` inherits that exposure.
+
+Two things replace authentication, and both must stay on every public route:
+
+- **The membership check.** The handle must resolve to a member with `isInGuild: true`. `verify-user` is a UI affordance for the form's badge; **`submit` re-runs normalization, format validation, and the lookup itself** and never trusts that verify was called. Nothing forces a client to call it, and a member can leave the guild between the two requests. Golden Rule 3 is enforced on the write path, not in the browser. Both endpoints resolve the member through one shared service helper so the two definitions of "verified" cannot drift.
+- **`src/middlewares/rateLimit.ts`.** Per-IP budgets — 60/min on `verify-user` (it fires on a debounce as the student types), 5/15min on `submit` (a legitimate student submits once a day). The store is `express-rate-limit`'s in-memory default, so counters are **process-local**: N processes multiply the effective budget by N. Phase 6's Redis swaps in at that one file and nowhere else.
+
+Other rules:
+
+- **`app.set('trust proxy', …)` takes an integer hop count from `TRUST_PROXY_HOPS`, never `true`.** With `true`, Express reads the leftmost `X-Forwarded-For` entry as the client IP — caller-supplied, so every budget becomes bypassable with a forged header. `config/index.ts` ignores any non-numeric value (including the literal `true`), leaving Express on the direct connection address. `express-rate-limit`'s `trustProxy` validation is left enabled so a bad setting surfaces as `ERR_ERL_PERMISSIVE_TRUST_PROXY`.
+- **CORS is an explicit allowlist** built from `APP_URL` + `ATTENDANCE_FORM_URL`. The dashboard and the form are separate deployments. Never `'*'` or `origin: true` while `credentials: true` is set.
+- **Response flags live inside `data`.** The PID sketches `verified` / `alreadySubmitted` at the top level, but `sendResponse` owns the envelope — the form reads `data.verified`.
+- **`verify-user` answers 200 for an unknown handle**, `submit` answers 404. Not-found is the routine answer on the read path; it is a genuine failure on the write path. A format error is a 400 from Zod either way, and must stay a distinguishable outcome — the form uses the difference to tell the student what to fix.
+- `validateRequest` validates `req.body`; **`validateQuery` is its sibling** for query-string input. It does not assign the parsed result back, because `req.query` is a getter under Express 5.
+- **P2002 detection under the driver adapter**: `err.meta.target` is **`undefined`** with `@prisma/adapter-pg`. The constraint arrives at `meta.driverAdapterError.cause.constraint.fields`, a driver-specific path that is not part of Prisma's documented contract. `attendance.service.ts` therefore matches on `JSON.stringify(err.meta)` containing `attendance_date`. Reading `meta.target` fails **silently** — the duplicate falls through to the generic "Duplicate Error" instead of the message naming the date. Check this if any P2002 handling is added elsewhere.
+
 ### Discord bot & member sync
 
 Runs **in the same process as Express**, under `src/lib/discord/` (not a module, because the gateway event handlers are not HTTP-scoped):
 
-- `client.ts` — the single shared `Client` (`Guilds` + `GuildMembers` intents), `startDiscordBot()` / `stopDiscordBot()`, and all `Events.*` registrations. **Never throws**: a bad token, a missing config value, or an unreachable guild is logged and the REST API keeps serving.
+- `client.ts` — the shared `Client` (`Guilds` + `GuildMembers` + `GuildMessages` + `MessageContent`), `startDiscordBot()` / `stopDiscordBot()`, and all `Events.*` registrations. **Never throws**: a bad token, a missing config value, or an unreachable guild is logged and the REST API keeps serving. The client is **not exported** — reach it via `getDiscordClient()`, because the degraded-intent retry replaces the instance (see below).
 - `member.sync.ts` — full `guild.members.fetch()` sync, chunked 200-per-`$transaction`, plus the module-level sync state that `/api/discord/sync/status` reports.
-- `member.mapper.ts`, `events/*.ts` — `GuildMember` → DB payload, and the four live listeners (`guildMemberAdd`, `guildMemberRemove`, `guildMemberUpdate`, `userUpdate`).
+- `message.ingest.ts` — `#daily-update` ingestion: resolve author → repair directory if needed → store → react ✅.
+- `member.mapper.ts`, `events/*.ts` — `GuildMember` → DB payload, and the five live listeners (`guildMemberAdd`, `guildMemberRemove`, `guildMemberUpdate`, `userUpdate`, `messageCreate`).
 
 Rules that matter:
 
 - **`DiscordMember` ≠ `User`.** `discord_members` is the synced guild directory and never authenticates; `users` is the ADMIN login account. Attendance/daily-update FKs belong on `DiscordMember` and are named `memberId` — never `userId`, which would read as pointing at `users`. The PID's schema listing calls its member model `User`; that entity is `DiscordMember` here, so PID SQL must be transcribed, not copied.
 - **Upsert on `discordUserId`, never on `discordUsername`.** Discord handles are mutable, so upserting on username creates a duplicate row on every rename. `upsertMemberPayload()` also handles the P2002 case where a member renames onto a handle another row still holds.
 - **Departure flags, never deletes** — `isInGuild: false` + `leftAt`, so attendance history keeps a valid owner. Query `where: { isInGuild: true }` when you mean "currently in the server".
-- **The departure guard**: if a member fetch returns 0 non-bots, or under 50% of the stored active count, the reconcile is skipped and logged loudly. Never remove it — without it a truncated fetch marks the whole directory departed in one `updateMany`, locking every student out of the attendance form. It is also load-bearing for the dashboard: every query in `dailyStatus.repository.ts` filters on `isInGuild`, so a mass-flagging would silently shrink the completion-rate denominator and empty the reminder target list, with no error raised anywhere.
-- **Server Members privileged intent** must be ON in the Discord Developer Portal. With it off, Discord rejects the connection outright (`Used disallowed intents`) rather than returning a partial list, so the bot fails to log in and sync never runs — the API keeps serving either way.
+- **The departure guard**: if a member fetch returns 0 non-bots, or under 50% of the stored active count, the reconcile is skipped and logged loudly. Never remove it — without it a truncated fetch marks the whole directory departed in one `updateMany`, locking every student out of the attendance form. It is load-bearing in two directions. For the dashboard: every query in `dailyStatus.repository.ts` filters on `isInGuild`, so a mass-flagging would silently shrink the completion-rate denominator and empty the reminder target list, with no error raised anywhere. And for the student-facing form: `member.repository.ts` filters the same way, so a mass-flagging makes `verify-user` answer "not a member" for **everyone** and locks the whole server out of submitting — a total outage that raises no error, only a collapse in verification success rate.
+- **Both privileged intents** (Server Members, Message Content) must be ON in the Discord Developer Portal. With either off, Discord rejects the connection outright (`Used disallowed intents`) rather than returning a partial feed.
+- **A missing Message Content intent must never take down member sync.** Because Discord refuses the whole connection, requesting `MessageContent` would otherwise couple ingestion to the member directory — and the directory is what the public attendance form's membership check reads, so one wrong portal checkbox would lock ~5,000 students out of submitting. `startDiscordBot()` therefore catches the `disallowed intents` rejection, rebuilds the client **without** `MessageContent`, and retries login **exactly once**. Member sync lives; ingestion is off. Intents are fixed at construction in discord.js, which is why the client is a rebuildable binding behind `getDiscordClient()` and why `handlersRegistered` is reset on rebuild — handlers must attach to the client that actually logged in.
+- **Degraded mode is silent by nature**, so it is reported: `GET /api/discord/sync/status` returns `dailyUpdate.ingestionEnabled` + `reason`. Without that field the only symptom is a month of missing daily updates and a dashboard showing every member as `MISSING_UPDATE`. Check it first when updates stop appearing.
 - Channel and guild IDs always come from `.env` (`src/config/discord.ts`, Zod-validated as 17–20 digit snowflakes). Never key logic off a channel name.
+
+### Daily-update ingestion (`messageCreate`)
+
+`events/messageCreate.ts` holds only the cheap filters that need the raw `Message` — configured guild, `DAILY_UPDATE_CHANNEL_ID`, non-bot author, `MessageType.Default`/`Reply`, non-empty. `message.ingest.ts` owns everything after that, so the part worth reasoning about is free of a live gateway object.
+
+- **Resolve the author by snowflake, never by handle.** PID §9 sketches "normalize `message.author.username`, then upsert" — do not follow it. Handles are mutable, so a student who renamed since the last sync would lose their update or have it credited to whoever now holds the old handle. `memberRepository.findMemberByDiscordUserId(message.author.id)` is the path.
+- **That lookup deliberately does not filter `isInGuild`**, unlike `findActiveMemberByUsername` and every other read of the directory. Do not "fix" the asymmetry: the two answer different questions. The form asks "may this person submit _now_?" — a departed member must be refused. Ingestion asks "_whose_ message is this?" — someone who posted at 23:00 and left at 23:30 still owns it, and filtering would silently drop their update.
+- **Unknown author ⇒ repair the directory, then ingest.** The initial ~5,000-member sync is not awaited at `ClientReady` and takes tens of seconds, so a student can post before the directory knows them. On a miss, `message.ingest.ts` fetches the member and writes them through `upsertMemberPayload()` — the same path member sync uses, carrying the username-collision tombstoning and reactivate-on-rejoin. Never `discordMember.create` directly; that would be a second write path that drifts. The repair must precede the insert, since `memberId` is a required FK. If the fetch fails, the message is dropped and logged — inventing a placeholder member row would poison the dashboard's denominators.
+- **`messageDate` comes from `getDhakaDate(message.createdAt)`, never from now**, and `messageCreatedAt` stores the send instant. This matters most exactly when the system is busiest — the 23:5x rush before the channel locks, where a message queued behind a slow write would otherwise be filed under the wrong day.
+- **✅ only on first write.** `createDailyUpdate` returns `{ record, created }` for this; a replayed gateway event resolves to the existing row and is not re-acknowledged. The reaction is best-effort and fires _after_ the write: the row is the source of truth, and a missing ✅ is cosmetic while a missing row marks a student absent.
+- **Attachment-only messages are ingested** (empty `message`, non-null column) — a screenshot with no caption is still an update. Messages with no content _and_ no attachments/embeds are skipped, which also backstops the degraded case: without `MessageContent` every message arrives empty, so the filter yields nothing ingested rather than thousands of blank rows that look real to the dashboard.
+- **Edits and deletes are not handled.** The stored row is the message as originally sent — an audit record.
+- Nothing here throws. A gateway listener has no request to fail, so every step is wrapped and logged; `message.ingest.ts` contains no `AppError` and no HTTP status codes.
 
 ### Dates and the attendance domain
 
@@ -108,5 +143,6 @@ Because P2025 is handled centrally, services use `findUniqueOrThrow` rather than
 ## Caveats
 
 - Auth cookies are set with `secure: false, sameSite: 'none'`, which browsers reject — dev-only settings that need fixing before deployment.
+- **`handleZodValidationError` title-cases every word** of every validation message (`str.replace(/\b\w/g, …)` in `src/errors/zodError.ts`), so a carefully written sentence comes back as "Enter A Valid Discord Username: 2-32 Characters …". It affects every endpoint's validation messages, not just the attendance ones. Fixing it changes existing response text, so it has been left alone; be aware that the message a client sees is not the string in the schema.
 - `postman-collection.json` documents the API with `baseUrl` configured to `http://localhost:8000/api`.
 - **`DISCORD_USERNAME_REGEX` must never be tightened to forbid a leading or trailing `_` / `.`.** The PID originally specified `/^(?![_.@])(?!.*\.{2})[a-z0-9_.]{2,32}(?<![_.])$/`, which rejected 115 of 2189 live members (5.3%) — `itzazad_`, `.rabbil`, `shahriarratul.`. Snowflake timestamps proved 59 of those accounts postdate Discord's Pomelo rollout, so the handles are current and valid, not grandfathered. The regex is now `/^(?!.*\.{2})[a-z0-9_.]{2,32}$/` and is verified against every synced member. Re-run that check after any change to it: tightening it locks real students out of the attendance form, violating Golden Rule 3.

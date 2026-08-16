@@ -5,6 +5,7 @@ import {
   getBotTag,
   getDiscordConfig,
   getGuild,
+  getIngestionState,
   isDiscordConnected,
 } from '@/lib/discord/client';
 import {
@@ -23,6 +24,8 @@ const getSyncStatusFromDB = async () => {
     prisma.discordMember.count({ where: { isInGuild: true } }),
   ]);
 
+  const ingestion = getIngestionState();
+
   return {
     bot: {
       connected: isDiscordConnected(),
@@ -35,6 +38,14 @@ const getSyncStatusFromDB = async () => {
       departed: total - active,
     },
     lastSync: getSyncState(),
+    // Reported rather than left to the logs on purpose: a bot that fell back to
+    // a login without MessageContent looks entirely healthy from outside, and
+    // the only other symptom is a month of missing daily updates.
+    dailyUpdate: {
+      ingestionEnabled: ingestion.enabled,
+      reason: ingestion.reason,
+      channelId: config?.channels.dailyUpdate ?? null,
+    },
   };
 };
 
