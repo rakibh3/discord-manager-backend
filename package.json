@@ -52,6 +52,7 @@
     "express-rate-limit": "^8.6.2",
     "http-status": "^2.1.0",
     "jsonwebtoken": "^9.0.3",
+    "node-cron": "^4.6.0",
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   }

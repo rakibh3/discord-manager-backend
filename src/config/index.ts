@@ -27,6 +27,28 @@ const parseOrigins = (...values: (string | undefined)[]): string[] =>
     .filter(Boolean);
 
 /**
+ * Whether this process runs the channel scheduler's timed jobs.
+ *
+ * `node-cron` tasks are per-process, so with N replicas every job fires N
+ * times: N permission edits (idempotent, harmless) and N announcement embeds
+ * in a channel ~5,000 students read (visible, not harmless). Exactly one
+ * instance should have this on.
+ *
+ * Defaults to true when unset, which is correct for the current single-instance
+ * deployment and means nothing breaks by omission. Only an explicit `false`
+ * (or `0`) switches the jobs off; the manual open/lock endpoints and the status
+ * read stay available on every process either way, because they act through the
+ * shared Discord client rather than through cron.
+ */
+const parseSchedulerEnabled = (value: string | undefined): boolean => {
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized) return true;
+
+  return normalized !== 'false' && normalized !== '0';
+};
+
+/**
  * How many reverse proxies sit in front of the API.
  *
  * Handed to `app.set('trust proxy', …)` as an integer hop count, never as
@@ -59,6 +81,7 @@ export default {
   attendance_form_url: env.ATTENDANCE_FORM_URL,
   allowed_origins: parseOrigins(env.APP_URL, env.ATTENDANCE_FORM_URL),
   trust_proxy_hops: parseTrustProxyHops(env.TRUST_PROXY_HOPS),
+  scheduler_enabled: parseSchedulerEnabled(env.SCHEDULER_ENABLED),
   env: env.NODE_ENV,
   admin: {
     emails: env.ADMIN_EMAILS

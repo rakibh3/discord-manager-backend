@@ -1,0 +1,50 @@
+// Channel open/lock schedule, edited by admins from the dashboard.
+//
+// The times live here rather than in code or in `.env` because they belong to
+// the people running the program: an exam week or a holiday changes them, and
+// neither should need a deploy.
+
+model ChannelSchedule {
+  id String @id @default(uuid())
+
+  // Which channel this schedule drives. One row per channel, and today there is
+  // exactly one (`DAILY_UPDATE`). A keyed row rather than a hard-coded singleton
+  // id leaves room for #attendance later without a table rename.
+  key String @unique
+
+  // Wall-clock times in Asia/Dhaka, `HH:mm`, 24-hour.
+  //
+  // `String`, not `DateTime`, for the same reason `attendance_date` is a string:
+  // these are civil times, not instants. A `DateTime` column round-trips through
+  // a timezone-carrying JS Date and can be shifted by a driver or a server's TZ,
+  // which would move the lock off the day boundary every record is filed under.
+  // A string cannot be silently shifted, and `HH:mm` compares and sorts
+  // correctly as text.
+  //
+  // There is deliberately NO timezone column. Every date in the attendance
+  // domain is an Asia/Dhaka civil date by definition (Golden Rule 5), so a
+  // schedule running in another zone would open the channel out of step with
+  // the day its records belong to. The zone is the DHAKA_TIMEZONE constant.
+  openTime  String @map("open_time")
+  closeTime String @map("close_time")
+
+  // Weekdays the schedule runs on, 0 = Sunday through 6 = Saturday — cron's own
+  // numbering, so this array feeds the cron expression and the boot reconcile
+  // without a second convention. Defaults to every day.
+  daysOfWeek Int[] @default([0, 1, 2, 3, 4, 5, 6]) @map("days_of_week")
+
+  // Pauses the timed jobs while keeping the times and weekdays. Disabling stops
+  // the scheduler; it does not lock the channel.
+  enabled Boolean @default(true)
+
+  // Audit: which admin last changed this, and when (`updatedAt`).
+  // SetNull, not Cascade — removing an admin account must never delete the
+  // schedule that drives the channel.
+  updatedById String? @map("updated_by_id")
+  updatedBy   User?   @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("channel_schedules")
+}

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Express 5 + TypeScript + Prisma 7 (PostgreSQL) REST API for a Discord daily-attendance / update automation admin dashboard. Authentication is strictly for administrators (no regular user login/registration; students/members submit attendance directly via web form). Auth, user, the Discord bot / member-sync modules, the public attendance endpoints, and `#daily-update` message ingestion exist. Still missing from the attendance domain: the channel open/lock scheduler, the reminder queue, and the dashboard endpoints.
+Express 5 + TypeScript + Prisma 7 (PostgreSQL) REST API for a Discord daily-attendance / update automation admin dashboard. Authentication is strictly for administrators (no regular user login/registration; students/members submit attendance directly via web form). Auth, user, the Discord bot / member-sync modules, the public attendance endpoints, `#daily-update` message ingestion, and the admin-managed channel open/lock scheduler exist. Still missing from the attendance domain: the reminder queue and the dashboard endpoints.
 
 ## Commands
 
@@ -32,7 +32,7 @@ No test framework is configured.
 
 ## Prisma setup (the main source of surprises)
 
-- **Config lives in `prisma.config.ts`**, not `package.json`. It points at the _directory_ `prisma/schema/` (split schema: `schema.prisma` holds generator + datasource, `auth.prisma` holds `User`/`RefreshToken`, `user.prisma` holds `Profile`, `discord.prisma` holds `DiscordMember`, `attendance.prisma` holds `Attendance`/`DailyUpdate`, `reminder.prisma` holds `ReminderLog`/`ReminderRecipient`). Adding a new `.prisma` file to that directory is enough for it to be picked up.
+- **Config lives in `prisma.config.ts`**, not `package.json`. It points at the _directory_ `prisma/schema/` (split schema: `schema.prisma` holds generator + datasource, `auth.prisma` holds `User`/`RefreshToken`, `user.prisma` holds `Profile`, `discord.prisma` holds `DiscordMember`, `attendance.prisma` holds `Attendance`/`DailyUpdate`, `reminder.prisma` holds `ReminderLog`/`ReminderRecipient`, `schedule.prisma` holds `ChannelSchedule`). Adding a new `.prisma` file to that directory is enough for it to be picked up.
 - The `prisma-client` generator outputs to **`generated/prisma`**, which is **gitignored**. A fresh clone will not typecheck until `bunx prisma generate` runs.
 - Import generated types from the `@generated/*` alias (`@generated/prisma/client`, `@generated/prisma/enums`) — never from `@prisma/client`.
 - The datasource block has **no `url`**; the connection is supplied at runtime by the `@prisma/adapter-pg` driver adapter in `src/lib/prisma.ts` (and by `prisma.config.ts` for CLI commands). Always use the shared `prisma` singleton from `@/lib/prisma`.
@@ -41,7 +41,7 @@ No test framework is configured.
 
 ESM (`"type": "module"`) with path aliases `@/*` → `src/*` and `@generated/*` → `generated/*`.
 
-`src/server.ts` connects Prisma, listens, **then** starts the Discord bot (unawaited) and registers `SIGINT`/`SIGTERM` shutdown; `src/app.ts` sets `trust proxy` (see below), wires CORS (credentials, origin = the `APP_URL` + `ATTENDANCE_FORM_URL` allowlist), JSON/urlencoded/cookie parsers, routers under `/api/auth`, `/api/users`, `/api/discord`, and `/api/attendance`, then `notFoundRoute` and `globalErrorHandler` last.
+`src/server.ts` connects Prisma, listens, **then** starts the Discord bot (unawaited) and — once that login resolves and the gateway reports ready via `onDiscordReady()` — the channel scheduler, and registers `SIGINT`/`SIGTERM` shutdown; `src/app.ts` sets `trust proxy` (see below), wires CORS (credentials, origin = the `APP_URL` + `ATTENDANCE_FORM_URL` allowlist), JSON/urlencoded/cookie parsers, routers under `/api/auth`, `/api/users`, `/api/discord`, `/api/schedule`, and `/api/attendance`, then `notFoundRoute` and `globalErrorHandler` last.
 
 ### Module pattern
 
@@ -127,9 +127,28 @@ Rules that matter:
 - **Edits and deletes are not handled.** The stored row is the message as originally sent — an audit record.
 - Nothing here throws. A gateway listener has no request to fail, so every step is wrapped and logged; `message.ingest.ts` contains no `AppError` and no HTTP status codes.
 
+### Channel scheduler (`#daily-update` open / lock)
+
+The submission window is enforced by the channel's own permissions, not by a time check in ingestion — ingestion deliberately stores whatever arrives, so these two must never both try to own the window. `src/lib/scheduler/channelSchedule.scheduler.ts` holds the `node-cron` tasks; `src/lib/discord/channel.state.ts` is the **only** module that edits the channel's permission overwrite; `src/modules/schedule/` exposes it at `/api/schedule` (all routes `auth(ADMIN)`).
+
+- **The schedule is data, not code.** `channel_schedules` holds one row (`key = 'DAILY_UPDATE'`), created lazily by `getOrCreateSchedule()` with the PID defaults 18:00 / 23:59 / all seven days / enabled. There is no seed step. The cron expression is **derived** at registration (`<mm> <HH> * * <days>`) and never stored — an admin edits a time picker, never a cron string, because a mistyped `0 6 * * *` produces a job that fires happily at the wrong hour with no error anywhere.
+- **`openTime` / `closeTime` are `String` `HH:mm`**, for the same reason the civil-date columns are strings: a `DateTime` can be shifted by a driver or the server's `TZ`, and these are wall-clock times, not instants. They compare and sort lexicographically, which is what makes the window check a plain string comparison.
+- **There is no timezone column.** `Asia/Dhaka` is the `DHAKA_TIMEZONE` constant, reported in the API payload and never accepted from a client. A schedule in another zone would open the channel out of step with the day boundary every attendance row is filed under.
+- **The window may not cross midnight** — `closeTime` must be strictly greater than `openTime`, checked in the service against the **merged** result of the patch, not the submitted fields alone. A lone `{ closeTime: "02:00" }` against a stored 18:00 is a 400. Reason: a message posted at 00:30 gets the _next_ day's `message_date` (correctly), so its author would read as missing on the day they actually submitted.
+- **`daysOfWeek` is `Int[]` using cron's own 0=Sunday numbering**, so one array feeds both the cron expression and the boot reconcile. An empty array is rejected — pausing is what `enabled: false` is for.
+- **Boot reconcile is silent.** `startChannelScheduler()` compares the window against the live overwrite and corrects a mismatch with `announce: false`. Never make it announce: a container restarting five times during a deploy would post five "🟢 Channel is OPEN" embeds to a channel thousands of students read. A restart at 8 PM otherwise leaves the channel locked all evening with no error raised anywhere.
+- **Channel state is read from Discord, never cached.** `isDailyUpdateChannelOpen()` reads the live `@everyone` overwrite. An admin can flip it by hand in the client, and a stored flag would make the reconcile skip a correction it should have made.
+- **Lock toggles `SendMessages` only** — `ViewChannel` is untouched, so a locked channel is read-only, not hidden.
+- **`destroy()` the tasks on reload, never `stop()`.** A stopped task retains its old cron expression; restarted later it fires on a schedule nobody can see in the database.
+- **`SCHEDULER_ENABLED` gates the timed jobs per process.** `node-cron` is in-process, so N replicas fire N times — the permission edit is idempotent but each replica posts its own embed. Unset means true. Same class of constraint as the process-local rate-limit store, and the same fix later: Phase 6's Redis makes BullMQ repeatable jobs a real distributed option. The manual endpoints and the status read work on **every** replica; only cron and the boot reconcile are gated.
+- **The bot needs `Manage Roles` on the channel.** Without it every open and lock fails with `DiscordAPIError[50013]` and the window is simply never enforced. That is why the failure is reported on `GET /api/schedule/daily-update` as `scheduler.lastRun.error` rather than only logged — check it first when the channel stops opening.
+- Nothing in the scheduler throws past its own boundary; failures are recorded in the in-memory `lastRun` (alongside `getSyncState()` / `getIngestionState()` in spirit) and the next day's job stays registered. `AppError` appears only in `schedule.service.ts`, which does have a request to fail.
+- The bot's own announcement embeds are excluded from ingestion by the existing bot-author filter — no `daily_updates` row is created for them.
+
 ### Dates and the attendance domain
 
 - **Civil dates are `String` in `YYYY-MM-DD`, never `DateTime`.** `attendance_date`, `message_date`, and `reminder_date` are Dhaka calendar dates, not instants. A `DateTime` column round-trips through a timezone-carrying JS `Date` and can shift a 23:58 Dhaka submission onto the wrong day; a string cannot be silently shifted by a driver. The format sorts and range-scans correctly, so month ranges are plain string comparisons.
+- **Wall-clock times come from the same module.** `getDhakaTimeOfDay()` (`HH:mm`, `hourCycle: 'h23'` so five past midnight is `00:05` and not `24:05`) and `getDhakaWeekday()` (0=Sunday, computed from `getDhakaDate` rather than a localized weekday name) exist for the scheduler's "is now inside the window" decision. Never `Date.getDay()` — at 01:00 Tuesday in Dhaka a UTC server still says Monday, and the reconcile would check the wrong day's schedule.
 - **`src/utils/dhakaDate.ts` is the only producer of those dates.** `getDhakaDate(instant?)` uses `Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' })` and is independent of the server's `TZ` (verified under `TZ=UTC` and `TZ=America/New_York`). Never slice an ISO string — that yields the UTC day. Pass an explicit instant when the day is not "now": a daily update belongs to the day its **message was sent**, and a reminder run just after midnight targets the day that already closed. `isValidDhakaDate` / `dhakaDateSchema` guard the column, which Postgres would otherwise let hold anything.
 - **Duplicate prevention is a database constraint, never a read-then-write check** (`@@unique([memberId, attendanceDate])`, `@unique` on `discord_message_id`, `@@unique([reminderId, memberId])`). A prior existence check does not survive concurrency; two simultaneous submissions would both pass it. P2002 is expected and handled centrally.
 - `ReminderLog.sentCount` / `failedCount` are an incrementing cache for the SSE progress bar; `reminder_recipients` is the source of truth. `finalizeReminderLog()` recomputes both from the recipient rows so a crashed worker cannot leave them permanently wrong.

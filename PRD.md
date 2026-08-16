@@ -774,8 +774,15 @@ Phase 4: Real-time Daily Update Collection
 ├── [x] Success reaction emoji (✅) on message
 
 Phase 5: Automated Scheduler (Asia/Dhaka)
-├── [ ] 06:00 PM Cron: Unlock channel & send opening embed
-├── [ ] 11:59 PM Cron: Lock channel & send closing embed
+├── [x] 06:00 PM Cron: Unlock channel & send opening embed
+├── [x] 11:59 PM Cron: Lock channel & send closing embed
+├── [x] Admin-managed schedule: times, weekdays & on/off stored in DB, edited from
+│       the dashboard (GET/PATCH /api/schedule/daily-update). 06:00 PM / 11:59 PM
+│       are only the DEFAULTS — they are no longer hard-coded, so an exam week or
+│       a holiday needs no deploy.
+├── [x] Boot reconcile: a restart mid-window restores the correct channel state
+│       (silently — no announcement, or a crash-loop would spam the channel)
+├── [x] Manual override: POST /api/schedule/daily-update/open | /lock
 
 Phase 6: BullMQ Queue & Rate-Limited DM Reminders
 ├── [ ] Redis setup & BullMQ Queue configuration

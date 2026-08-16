@@ -8,6 +8,7 @@ import { notFoundRoute } from '@/errors/notFound';
 import { attendanceRouter } from '@/modules/attendance/attendance.routes';
 import { authRouter } from '@/modules/auth/auth.routes';
 import { discordRouter } from '@/modules/discord/discord.routes';
+import { scheduleRouter } from '@/modules/schedule/schedule.routes';
 import { userRouter } from '@/modules/user/user.routes';
 
 const app: Application = express();
@@ -35,6 +36,7 @@ app.use(cookieParser());
 app.use('/api/auth', authRouter);
 app.use('/api/users', userRouter);
 app.use('/api/discord', discordRouter);
+app.use('/api/schedule', scheduleRouter);
 // The only unauthenticated router in the application — students have no
 // account to authenticate with. See attendance.routes.ts.
 app.use('/api/attendance', attendanceRouter);

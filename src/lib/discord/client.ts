@@ -71,6 +71,25 @@ export const getIngestionState = (): {
   reason: string | null;
 } => ({ enabled: ingestionEnabled, reason: ingestionDisabledReason });
 
+/**
+ * Runs `callback` once the gateway connection is ready, or immediately if it
+ * already is.
+ *
+ * `client.login()` resolves as soon as the token is accepted, which is before
+ * `ClientReady` — anything that needs to fetch a channel or a guild has to wait
+ * for this rather than for login. Call it only *after* `startDiscordBot()` has
+ * settled: until then the degraded-intent retry may still replace the client,
+ * and the listener would be attached to the discarded one.
+ */
+export const onDiscordReady = (callback: () => void): void => {
+  if (client.isReady()) {
+    callback();
+    return;
+  }
+
+  client.once(Events.ClientReady, () => callback());
+};
+
 /** Fetches the configured guild, or null when it is unreachable. */
 export const getGuild = async (): Promise<Guild | null> => {
   if (!activeConfig || !isDiscordConnected()) return null;

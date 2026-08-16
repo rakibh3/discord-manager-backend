@@ -31,6 +31,9 @@ model User {
   // Broadcasts this admin triggered. Author only — an admin is never the
   // subject of an attendance or daily-update record.
   reminderLogs  ReminderLog[]
+  // Channel schedules this admin last edited. Audit only, and nullable on the
+  // other side: deleting the account must not take the schedule with it.
+  channelSchedules ChannelSchedule[]
 
   @@map("users")
 }

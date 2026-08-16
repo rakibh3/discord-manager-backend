@@ -10,9 +10,21 @@
       "value": "http://localhost:8000/api",
       "type": "string"
     },
-    { "key": "accessToken", "value": "", "type": "string" },
-    { "key": "refreshToken", "value": "", "type": "string" },
-    { "key": "attendanceUsername", "value": "", "type": "string" }
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "attendanceUsername",
+      "value": "",
+      "type": "string"
+    }
   ],
   "event": [
     {
@@ -42,7 +54,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/auth/login",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n    \"email\": \"admin@example.com\",\n    \"password\": \"adminPassword123\"\n}",
@@ -88,7 +105,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/auth/refresh-token",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -127,7 +149,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/auth/logout",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -189,7 +216,12 @@
           "request": {
             "method": "PUT",
             "url": "{{baseUrl}}/users/my-profile",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n    \"name\": \"Admin User\",\n    \"profilePhoto\": \"https://example.com/admin.jpg\",\n    \"bio\": \"System Administrator\"\n}",
@@ -266,7 +298,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/discord/sync",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -292,6 +329,183 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "Channel Schedule",
+      "description": "Admin-managed open/lock schedule for #daily-update (requires ADMIN role).\n\nThe times are stored in the database, not in code or .env, and take effect without a restart. Times are HH:mm wall-clock in Asia/Dhaka; the cron expression is derived by the backend and never exposed.\n\nOperational prerequisite: the bot needs \"Manage Roles\" on the channel to edit the @everyone SendMessages overwrite. Without it every open and lock fails and `scheduler.lastRun.error` says so.",
+      "item": [
+        {
+          "name": "Get Schedule",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/schedule/daily-update",
+            "description": "Requires admin auth. Returns four things:\n\n- `schedule` - the stored openTime, closeTime, daysOfWeek (0=Sunday..6=Saturday), enabled flag, the fixed `timezone` (Asia/Dhaka, reported but never accepted), and who last changed it.\n- `scheduler` - whether THIS process runs the timed jobs (`processEnabled`, from SCHEDULER_ENABLED), whether jobs are registered (`running`), `nextOpenAt` / `nextLockAt` as instants, and `lastRun`.\n- `channel` - the configured channel ID and its LIVE open state, read from Discord rather than a stored flag.\n\nCheck `scheduler.lastRun.error` first when the channel stops opening: a missing Manage Roles permission surfaces here and nowhere else."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Schedule retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.schedule).to.have.property('openTime');",
+                  "    pm.expect(jsonData.data.schedule.timezone).to.eql('Asia/Dhaka');",
+                  "    pm.expect(jsonData.data.channel).to.have.property('isOpen');",
+                  "});",
+                  "",
+                  "// A scheduler that cannot edit the overwrite has no other symptom",
+                  "// than a channel that never opens.",
+                  "if (jsonData.data && jsonData.data.scheduler && jsonData.data.scheduler.lastRun && jsonData.data.scheduler.lastRun.error) {",
+                  "    console.warn('⚠️ Last scheduler run failed: ' + jsonData.data.scheduler.lastRun.error);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Schedule",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/schedule/daily-update",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"openTime\": \"18:00\",\n  \"closeTime\": \"23:59\",\n  \"daysOfWeek\": [\n    0,\n    1,\n    2,\n    3,\n    4,\n    5,\n    6\n  ],\n  \"enabled\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Partial update - send only what changes. Saving destroys and re-registers the cron jobs and reconciles the channel immediately, so a change that puts the current moment inside the new window opens the channel right away.\n\ndaysOfWeek uses 0=Sunday..6=Saturday. A `timezone` field is ignored rather than stored."
+          }
+        },
+        {
+          "name": "Update Schedule - Weekdays Only (Sun-Thu)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/schedule/daily-update",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"daysOfWeek\": [\n    0,\n    1,\n    2,\n    3,\n    4\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Runs the schedule Sunday through Thursday only. Editing weekdays is not passive: if today is excluded and the channel is currently open, the reconcile locks it on save."
+          }
+        },
+        {
+          "name": "Update Schedule - Cross-Midnight (400)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/schedule/daily-update",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"closeTime\": \"02:00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Rejected with 400. The close time must be strictly later than the open time on the same Dhaka day.\n\nNote this is checked against the MERGED schedule, not the submitted fields: sending only `closeTime` here still fails against the stored `openTime`. A window crossing midnight would file a 00:30 message under the next day, so its author would read as missing on the day they actually submitted."
+          }
+        },
+        {
+          "name": "Update Schedule - No Weekdays (400)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/schedule/daily-update",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"daysOfWeek\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Rejected with 400. A schedule that can never fire is a mistake, not a way to pause. Use `{ \"enabled\": false }` to pause while keeping the times."
+          }
+        },
+        {
+          "name": "Open Channel Now",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/schedule/daily-update/open",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel."
+          }
+        },
+        {
+          "name": "Lock Channel Now",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/schedule/daily-update/lock",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel."
+          }
         }
       ]
     },
@@ -451,7 +665,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/attendance/submit",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"rakib@example.com\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
@@ -498,7 +717,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/attendance/submit",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"rakib@example.com\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
@@ -542,7 +766,12 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/attendance/submit",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"Ghost User\",\n  \"phone\": \"01711000000\",\n  \"email\": \"ghost@example.com\",\n  \"discordUsername\": \"definitely_not_a_member_9999\"\n}",
