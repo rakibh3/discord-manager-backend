@@ -37,9 +37,7 @@ const readReminderId = (req: Request): string => {
 
 // Who would be reminded for a date — the confirm step before anything is sent
 const getTargets = catchAsync(async (req, res) => {
-  const result = await reminderService.previewTargets(
-    req.query.date as string,
-  );
+  const result = await reminderService.previewTargets(req.query.date as string);
 
   sendResponse(res, {
     success: true,

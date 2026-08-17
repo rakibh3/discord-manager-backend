@@ -2,7 +2,7 @@ import { ReminderDeliveryStatus } from '@generated/prisma/enums';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
-import { getRedisError,isRedisAvailable } from '@/lib/queue/connection';
+import { getRedisError, isRedisAvailable } from '@/lib/queue/connection';
 import {
   enqueueReminderJobs,
   removeReminderJobs,

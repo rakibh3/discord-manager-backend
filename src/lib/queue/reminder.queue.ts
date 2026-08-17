@@ -1,9 +1,6 @@
 import { type JobsOptions, Queue } from 'bullmq';
 
-import {
-  getRedisConnection,
-  isRedisAvailable,
-} from '@/lib/queue/connection';
+import { getRedisConnection, isRedisAvailable } from '@/lib/queue/connection';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('ReminderQueue');

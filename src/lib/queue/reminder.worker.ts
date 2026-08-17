@@ -1,4 +1,7 @@
-import { ReminderDeliveryStatus, ReminderStatus } from '@generated/prisma/enums';
+import {
+  ReminderDeliveryStatus,
+  ReminderStatus,
+} from '@generated/prisma/enums';
 import { type Job, Worker } from 'bullmq';
 
 import config from '@/config';
@@ -91,9 +94,8 @@ const finalizeIfDrained = async (reminderId: string): Promise<void> => {
 
   if (pending > 0) return;
 
-  const { claimed, log } = await reminderRepository.finalizeReminderLog(
-    reminderId,
-  );
+  const { claimed, log } =
+    await reminderRepository.finalizeReminderLog(reminderId);
 
   // Lost the race, or the broadcast was cancelled and is already terminal.
   if (!claimed) return;
@@ -357,10 +359,7 @@ export const stopReminderWorker = async (): Promise<void> => {
     await worker.close();
     logger.info('Reminder worker stopped.');
   } catch (error) {
-    logger.error(
-      'Reminder worker did not stop cleanly:',
-      describeError(error),
-    );
+    logger.error('Reminder worker did not stop cleanly:', describeError(error));
   } finally {
     worker = null;
   }

@@ -48,10 +48,11 @@ const submitAttendanceValidationSchema = z.object({
     .trim()
     .min(3, { error: 'Full name must be at least 3 characters' })
     .max(100, { error: 'Full name must be at most 100 characters' })
-    // Unicode letters rather than `a-zA-Z`, so a name written in Bengali is
-    // accepted. The rule is "letters and spaces"; it is not "Latin letters".
-    .regex(/^[\p{L}\s]+$/u, {
-      error: 'Full name may contain only letters and spaces',
+    // English-only by product decision. The message names the script, because
+    // "only letters" reads as nonsense to a student who just typed their own
+    // name in their own alphabet.
+    .regex(/^[A-Za-z\s]+$/, {
+      error: 'Full name must use English letters and spaces only',
     }),
 
   // `01XXXXXXXXX`, `+8801XXXXXXXXX`, or `8801XXXXXXXXX`. The `1[3-9]` covers

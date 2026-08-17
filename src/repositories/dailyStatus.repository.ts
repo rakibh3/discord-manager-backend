@@ -302,8 +302,44 @@ const listMembersMissingUpdate = async (
     ORDER BY dm.discord_username ASC
   `;
 
+/**
+ * One member's daily status for a date, using the exact same status derivation
+ * as the page and counts queries.
+ */
+const getDailyStatusForMember = async (
+  memberId: string,
+  date: string,
+): Promise<DailyStatusRow | null> => {
+  const rows = await prisma.$queryRaw<DailyStatusRow[]>`
+    SELECT
+      dm.id               AS "memberId",
+      dm.discord_user_id  AS "discordUserId",
+      dm.discord_username AS "discordUsername",
+      dm.display_name     AS "displayName",
+      dm.is_in_guild      AS "isInGuild",
+      a.name              AS "name",
+      a.email             AS "email",
+      a.phone             AS "phone",
+      a.submitted_at      AS "submittedAt",
+      (a.id IS NOT NULL)        AS "hasAttendance",
+      (du.member_id IS NOT NULL) AS "hasDailyUpdate",
+      ${statusExpression} AS "status"
+    FROM discord_members dm
+    LEFT JOIN attendances a
+      ON dm.id = a.member_id AND a.attendance_date = ${date}
+    LEFT JOIN (
+      SELECT DISTINCT member_id FROM daily_updates WHERE message_date = ${date}
+    ) du ON dm.id = du.member_id
+    WHERE dm.id = ${memberId}
+    LIMIT 1
+  `;
+
+  return rows[0] ?? null;
+};
+
 export const dailyStatusRepository = {
   getDailyStatusPage,
   getDailyStatusCounts,
+  getDailyStatusForMember,
   listMembersMissingUpdate,
 };
