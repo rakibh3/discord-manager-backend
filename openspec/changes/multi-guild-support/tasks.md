@@ -119,8 +119,8 @@
 
 ## 13. Documentation
 
-- [ ] 13.1 Add a multi-server section to `CLAUDE.md` covering the guild-scoped directory, the fan-out rules, the per-server departure guard, the one-DM-per-account rule, and the per-server announcement claim.
-- [ ] 13.2 Correct every existing `CLAUDE.md` rule that says "the guild", "the configured guild", or names a single channel ID.
+- [x] 13.1 Add a multi-server section to `CLAUDE.md` covering the guild-scoped directory, the fan-out rules, the per-server departure guard, the one-DM-per-account rule, and the per-server announcement claim.
+- [x] 13.2 Correct every existing `CLAUDE.md` rule that says "the guild", "the configured guild", or names a single channel ID.
 - [ ] 13.3 Update `API_INTEGRATION.md` and `BACKEND_REQUIREMENTS.md` with the per-server response shapes and the server filter.
 
 ## 14. Deployment and verification

@@ -2,6 +2,7 @@ import { ReminderDeliveryStatus } from '@generated/prisma/enums';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
+import { getConfiguredGuilds } from '@/lib/discord/client';
 import { getRedisError, isRedisAvailable } from '@/lib/queue/connection';
 import {
   enqueueReminderJobs,
@@ -26,6 +27,56 @@ const logger = createLogger('ReminderService');
 type TSendReminderPayload = {
   date: string;
   message: string;
+  /**
+   * Restrict the broadcast to named servers. Omitted means every configured
+   * server.
+   *
+   * Narrowing does NOT weaken the one-broadcast-per-date conflict: that guard
+   * protects the bot's single shared DM budget, which is global, so two
+   * "different server" broadcasts would still be two mass blasts at once.
+   */
+  guildIds?: string[];
+};
+
+/**
+ * Refuses a server that is not configured, rather than quietly broadcasting to
+ * every server. On a path that sends thousands of DMs, a mistyped ID must not
+ * silently widen the blast radius.
+ */
+const assertConfiguredGuilds = (guildIds?: string[]): void => {
+  if (!guildIds?.length) return;
+
+  const known = new Set(getConfiguredGuilds().map((guild) => guild.guildId));
+  const unknown = guildIds.filter((id) => !known.has(id));
+
+  if (unknown.length > 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Unknown server(s): ${unknown.join(', ')}. Configured servers are listed at GET /api/discord/servers.`,
+    );
+  }
+};
+
+/**
+ * The member records to remind, across every configured server or only those
+ * named.
+ *
+ * Returns one entry per MEMBER RECORD, so an account missing an update in two
+ * servers appears twice — that is the per-server audit. The queue collapses
+ * them into one DM per account before anything is sent.
+ */
+const selectTargets = async (date: string, guildIds?: string[]) => {
+  if (!guildIds?.length) {
+    return dailyStatusRepository.listMembersMissingUpdate(date);
+  }
+
+  const perGuild = await Promise.all(
+    guildIds.map((guildId) =>
+      dailyStatusRepository.listMembersMissingUpdate(date, guildId),
+    ),
+  );
+
+  return perGuild.flat();
 };
 
 /**
@@ -36,10 +87,22 @@ type TSendReminderPayload = {
  * miss the `is_in_guild` filter that keeps departed members out of both the
  * completion-rate denominator and this target list.
  */
-const previewTargets = async (date: string) => {
-  const targets = await dailyStatusRepository.listMembersMissingUpdate(date);
+const previewTargets = async (date: string, guildIds?: string[]) => {
+  assertConfiguredGuilds(guildIds);
 
-  return { date, targetCount: targets.length, targets };
+  const targets = await selectTargets(date, guildIds);
+
+  return {
+    date,
+    /** Recipient rows that would be written — one per member record. */
+    targetCount: targets.length,
+    /**
+     * People who would actually be contacted. Lower than `targetCount` when
+     * someone is a member of several servers, because they receive one DM.
+     */
+    uniqueRecipients: new Set(targets.map((t) => t.discordUserId)).size,
+    targets,
+  };
 };
 
 /**
@@ -60,9 +123,11 @@ const previewTargets = async (date: string) => {
  * DM exists.
  */
 const startBroadcast = async (
-  { date, message }: TSendReminderPayload,
+  { date, message, guildIds }: TSendReminderPayload,
   adminId: string,
 ) => {
+  assertConfiguredGuilds(guildIds);
+
   if (!isRedisAvailable()) {
     throw new AppError(
       httpStatus.SERVICE_UNAVAILABLE,
@@ -79,7 +144,7 @@ const startBroadcast = async (
     );
   }
 
-  const targets = await dailyStatusRepository.listMembersMissingUpdate(date);
+  const targets = await selectTargets(date, guildIds);
 
   if (targets.length === 0) {
     throw new AppError(

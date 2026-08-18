@@ -53,11 +53,45 @@ const sendReminderValidationSchema = z.object({
     .max(MAX_REMINDER_MESSAGE_LENGTH, {
       error: `The reminder message must be ${MAX_REMINDER_MESSAGE_LENGTH} characters or fewer, so it fits in one Discord message alongside the reminder heading`,
     }),
+  /**
+   * Restrict the broadcast to named servers. Omitted means every configured
+   * server, which is the ordinary case.
+   *
+   * Whether an ID is configured is checked in the service, so the error names
+   * the unknown server rather than reading as a format complaint.
+   */
+  guildIds: z
+    .array(
+      z
+        .string({ error: 'Each server ID must be a string' })
+        .trim()
+        .regex(/^\d{17,20}$/, {
+          error: 'Each server ID must be a Discord snowflake (17-20 digits)',
+        }),
+    )
+    .min(1, {
+      error:
+        'Provide at least one server ID, or omit guildIds entirely to remind every configured server',
+    })
+    .optional(),
 });
 
 /** `GET /api/reminders/targets?date=` — the preview, before anything is sent. */
 const targetsQueryValidationSchema = z.object({
   date: reminderDateSchema,
+  /** Comma-separated server IDs; omitted means every configured server. */
+  guildIds: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) =>
+      value
+        ? value
+            .split(',')
+            .map((id) => id.trim())
+            .filter(Boolean)
+        : undefined,
+    ),
 });
 
 /**
