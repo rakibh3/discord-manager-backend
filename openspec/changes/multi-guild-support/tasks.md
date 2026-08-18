@@ -47,12 +47,12 @@
 
 ## 6. Channel scheduler across servers
 
-- [ ] 6.1 Change `setDailyUpdateChannelOpen` and `isDailyUpdateChannelOpen` in `channel.state.ts` to take a `TGuildConfig`, resolving that server's channel and verifying it belongs to that server.
-- [ ] 6.2 Keep `channel.state.ts` the only module that edits a channel overwrite; add the fan-out at the caller, not inside it.
-- [ ] 6.3 Fan out the timed open and lock jobs in `channelSchedule.scheduler.ts` from one registered task, recording a per-server result in `lastRun`.
-- [ ] 6.4 Fan out the boot reconcile per server, each in its own try/catch, still with `announce: false`.
-- [ ] 6.5 Extend `/api/schedule/daily-update` to report every configured server's live channel state and last-run outcome.
-- [ ] 6.6 Extend the manual open/lock endpoints to fan out by default and accept an optional `guildIds` array, refusing an unconfigured server ID.
+- [x] 6.1 Change `setDailyUpdateChannelOpen` and `isDailyUpdateChannelOpen` in `channel.state.ts` to take a `TGuildConfig`, resolving that server's channel and verifying it belongs to that server.
+- [x] 6.2 Keep `channel.state.ts` the only module that edits a channel overwrite; add the fan-out at the caller, not inside it.
+- [x] 6.3 Fan out the timed open and lock jobs in `channelSchedule.scheduler.ts` from one registered task, recording a per-server result in `lastRun`.
+- [x] 6.4 Fan out the boot reconcile per server, each in its own try/catch, still with `announce: false`.
+- [x] 6.5 Extend `/api/schedule/daily-update` to report every configured server's live channel state and last-run outcome.
+- [x] 6.6 Extend the manual open/lock endpoints to fan out by default and accept an optional `guildIds` array, refusing an unconfigured server ID.
 - [ ] 6.7 Verify that a server missing `Manage Roles` fails alone: the other server opens, and the failure is visible on the status read.
 
 ## 7. Daily-update ingestion per server
