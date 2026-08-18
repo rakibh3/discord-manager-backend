@@ -5,10 +5,7 @@ import {
   getDailyUpdateChannelId,
   isDailyUpdateChannelOpen,
 } from '@/lib/discord/channel.state';
-import {
-  getConfiguredGuilds,
-  isDiscordConnected,
-} from '@/lib/discord/client';
+import { getConfiguredGuilds, isDiscordConnected } from '@/lib/discord/client';
 import { guildLabel } from '@/lib/discord/fanout';
 import {
   applyChannelState,
@@ -195,7 +192,8 @@ const setChannelState = async (open: boolean, guildIds?: string[]) => {
 
 const openChannelNow = (guildIds?: string[]) => setChannelState(true, guildIds);
 
-const lockChannelNow = (guildIds?: string[]) => setChannelState(false, guildIds);
+const lockChannelNow = (guildIds?: string[]) =>
+  setChannelState(false, guildIds);
 
 export const scheduleService = {
   getSchedule,

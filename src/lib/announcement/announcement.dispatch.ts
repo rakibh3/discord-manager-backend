@@ -262,7 +262,9 @@ const targetGuilds = (guildIds?: string[]): TGuildConfig[] => {
 
 const dispatchForGuild = async (
   guild: TGuildConfig,
-  template: Awaited<ReturnType<typeof announcementRepository.getOrCreateTemplate>>,
+  template: Awaited<
+    ReturnType<typeof announcementRepository.getOrCreateTemplate>
+  >,
   { trigger, force, triggeredById }: Required<TDispatchInput>,
 ): Promise<TDispatchResult> => {
   const announcementDate = getDhakaDate();
@@ -295,7 +297,10 @@ const dispatchForGuild = async (
     // the constraint that stops an accidental one. A P2002 on that number is a
     // conflict to report, never something to retry into.
     const attempt = force
-      ? await announcementRepository.nextAttemptNumber(guildId, announcementDate)
+      ? await announcementRepository.nextAttemptNumber(
+          guildId,
+          announcementDate,
+        )
       : 1;
 
     const claimed = await claim({
@@ -396,7 +401,6 @@ const dispatchForGuild = async (
   }
 };
 
-
 export type TGuildDispatchOutcome = {
   guildId: string;
   label: string;
@@ -430,7 +434,10 @@ export const dispatchAttendanceAnnouncement = async ({
   try {
     template = await announcementRepository.getOrCreateTemplate();
   } catch (error) {
-    logger.error('Could not read the announcement template:', describeError(error));
+    logger.error(
+      'Could not read the announcement template:',
+      describeError(error),
+    );
 
     // No template means nothing to post anywhere; reported against every
     // targeted server so the failure is visible on the status read.
@@ -465,7 +472,9 @@ export const dispatchAttendanceAnnouncement = async ({
   // Checked once, before any claim: a disconnected bot must not burn any
   // server's day on a send that was never going to reach Discord.
   if (!isDiscordConnected()) {
-    logger.error('Skipping the announcement: the Discord bot is not connected.');
+    logger.error(
+      'Skipping the announcement: the Discord bot is not connected.',
+    );
 
     return targetGuilds(guildIds).map((guild) => ({
       guildId: guild.guildId,

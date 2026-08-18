@@ -25,7 +25,7 @@
 - [x] 3.5 Rework `userUpdate` so a handle change updates that account's record in every configured server that holds one.
 - [x] 3.6 Confirm the degraded-intent retry still rebuilds the client, re-registers handlers, and applies to every server at once.
 - [x] 3.7 On ready, verify every configured channel ID (attendance, daily-update, reminder) resolves to a text channel in the server it was configured under; report and exclude a server that fails, leaving the others running.
-- [ ] 3.8 Verify a deliberately swapped configuration is caught: exchange the two servers' daily-update channel IDs and confirm startup refuses both servers, rather than the mistake first surfacing as ingestion silently dropping every message.
+- [x] 3.8 Verify a deliberately swapped configuration is caught: exchange the two servers' daily-update channel IDs and confirm startup refuses both servers, rather than the mistake first surfacing as ingestion silently dropping every message.
 - [x] 3.9 Surface channel-verification failures on `/api/discord/sync/status` alongside reachability, naming the channel and the reason.
 
 ## 4. Member sync per server (highest-risk work)
@@ -95,7 +95,7 @@
 - [x] 10.6 Report `lastFallback` per server so a missing `Send Messages` in one server is visible.
 - [x] 10.7 Accept an optional `guildIds` restriction on `POST /send`, keeping the same-date 409 global.
 - [x] 10.8 Verify a member of both servers who missed in both receives exactly one DM and has both recipient rows settled.
-- [ ] 10.9 Verify the rate limiter still paces the whole queue rather than per server.
+- [x] 10.9 Verify the rate limiter still paces the whole queue rather than per server.
 
 ## 11. Announcement across servers
 
@@ -106,7 +106,7 @@
 - [x] 11.5 Record unresolved mention targets per server, and keep an unresolved target from ever withholding that server's message.
 - [x] 11.6 Change `findUnsupportedPlaceholders` validation unchanged, but validate saved mention handles against the union of configured servers.
 - [x] 11.7 Extend `GET /api/announcement/attendance` to report `today.posted` and the last outcome per server, and the manual send to accept an optional `guildIds`.
-- [ ] 11.8 Verify a forced second send claims the next attempt number for the named server only.
+- [x] 11.8 Verify a forced second send claims the next attempt number for the named server only.
 
 ## 12. HTTP surface and validation
 
@@ -114,14 +114,14 @@
 - [x] 12.2 Add `guildId`, `serverLabel`, and `serverCount` to the daily-status row serialization and a `server` column to the CSV export, including the server in the export filename when filtered.
 - [x] 12.3 Add the admin-only endpoint that lists the configured servers with their labels and reachability.
 - [x] 12.4 Extend `/api/discord/sync/status` to report per-server sync state and reachability, and `POST /sync` to accept an optional `guildId`.
-- [ ] 12.5 Confirm every fan-out controller answers 200 with `summary.failed > 0` on partial success and an error status only when every server failed.
-- [ ] 12.6 Update `postman-collection.json` with the new parameters and per-server response shapes.
+- [x] 12.5 Confirm every fan-out controller answers 200 with `summary.failed > 0` on partial success and an error status only when every server failed.
+- [x] 12.6 Update `postman-collection.json` with the new parameters and per-server response shapes.
 
 ## 13. Documentation
 
 - [x] 13.1 Add a multi-server section to `CLAUDE.md` covering the guild-scoped directory, the fan-out rules, the per-server departure guard, the one-DM-per-account rule, and the per-server announcement claim.
 - [x] 13.2 Correct every existing `CLAUDE.md` rule that says "the guild", "the configured guild", or names a single channel ID.
-- [ ] 13.3 Update `API_INTEGRATION.md` and `BACKEND_REQUIREMENTS.md` with the per-server response shapes and the server filter.
+- [x] 13.3 Update `API_INTEGRATION.md` and `BACKEND_REQUIREMENTS.md` with the per-server response shapes and the server filter.
 
 ## 14. Deployment and verification
 

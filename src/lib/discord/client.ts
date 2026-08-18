@@ -376,7 +376,12 @@ const registerHandlers = () => {
   // first. `resolveGuildMember` is passed per server so each write carries the
   // right server's ID.
   client.on(Events.UserUpdate, (oldUser, newUser) => {
-    void handleUserUpdate(oldUser, newUser, getConfiguredGuilds, resolveGuildMember);
+    void handleUserUpdate(
+      oldUser,
+      newUser,
+      getConfiguredGuilds,
+      resolveGuildMember,
+    );
   });
 
   // Registered structurally rather than checked inside the handler: without

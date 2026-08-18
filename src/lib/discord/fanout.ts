@@ -105,8 +105,9 @@ export const anySucceeded = <T>(outcomes: TGuildOutcome<T>[]): boolean =>
 /** Joins every failure into one message, for the all-failed error case. */
 export const describeFailures = <T>(outcomes: TGuildOutcome<T>[]): string =>
   outcomes
-    .filter((outcome): outcome is Extract<typeof outcome, { ok: false }> =>
-      !outcome.ok,
+    .filter(
+      (outcome): outcome is Extract<typeof outcome, { ok: false }> =>
+        !outcome.ok,
     )
     .map((outcome) => `${outcome.label} (${outcome.guildId}): ${outcome.error}`)
     .join('; ');

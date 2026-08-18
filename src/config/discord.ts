@@ -212,7 +212,10 @@ export const loadDiscordConfig = ():
 
   const guilds: TListSpec = {
     name: 'DISCORD_GUILD_IDS',
-    entries: readList(process.env.DISCORD_GUILD_IDS, process.env.DISCORD_GUILD_ID),
+    entries: readList(
+      process.env.DISCORD_GUILD_IDS,
+      process.env.DISCORD_GUILD_ID,
+    ),
   };
 
   const attendance: TListSpec = {

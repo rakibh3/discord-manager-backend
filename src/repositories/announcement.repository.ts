@@ -278,9 +278,7 @@ const nextAttemptNumber = async (
 };
 
 /** The most recent attempt on any day, for the status payload. */
-const findLastLog = async (
-  guildId?: string,
-): Promise<AnnouncementLog | null> =>
+const findLastLog = async (guildId?: string): Promise<AnnouncementLog | null> =>
   prisma.announcementLog.findFirst({
     where: {
       key: ATTENDANCE_ANNOUNCEMENT_KEY,

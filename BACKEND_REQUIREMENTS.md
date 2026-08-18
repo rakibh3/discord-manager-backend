@@ -13,6 +13,22 @@ Verified against the running backend at `http://localhost:8000` and the source a
 
 ---
 
+> **Multi-server update (2026-08-18).** The backend now serves one or many identical
+> Discord servers from a single deployment. Two things in this document changed as a
+> result, and are already implemented:
+>
+> - **`/api/daily-status`, `/counts` and `/export` accept an optional `guildId`.** Omitted
+>   means every configured server. Every row carries `guildId`, `serverLabel` and
+>   `serverCount`; `/counts` returns the seven figures plus a `byServer` breakdown built
+>   from the same query. The CSV export gains a leading `server` column.
+> - **`GET /api/attendance/window` is unchanged.** One shared schedule drives every
+>   server, so the window is one answer and takes no server parameter — §2's contract
+>   below still holds exactly as written.
+>
+> `GET /api/attendance/verify-user` and `POST /api/attendance/submit` now carry a
+> `servers` array; a submission is recorded in every server the handle belongs to. See
+> §5A of `API_INTEGRATION.md` for the full shapes.
+
 ## 1. The `daily-status` module needs an HTTP layer
 
 ### 1.1 Current state

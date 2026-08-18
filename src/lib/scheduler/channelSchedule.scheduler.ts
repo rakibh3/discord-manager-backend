@@ -211,7 +211,10 @@ export const reconcileChannelState = async (): Promise<void> => {
   try {
     schedule = await channelScheduleRepository.getOrCreateSchedule();
   } catch (error) {
-    logger.error('Reconcile failed to read the schedule:', describeError(error));
+    logger.error(
+      'Reconcile failed to read the schedule:',
+      describeError(error),
+    );
     return;
   }
 
@@ -324,11 +327,15 @@ const registerTasks = (schedule: TChannelScheduleWithEditor): void => {
     noOverlap: true,
   });
 
-  lockTask = cron.schedule(lockExpression, () => runScheduledTransition(false), {
-    timezone: DHAKA_TIMEZONE,
-    name: 'daily-update-lock',
-    noOverlap: true,
-  });
+  lockTask = cron.schedule(
+    lockExpression,
+    () => runScheduledTransition(false),
+    {
+      timezone: DHAKA_TIMEZONE,
+      name: 'daily-update-lock',
+      noOverlap: true,
+    },
+  );
 
   logger.info(
     `Registered open "${openExpression}" and lock "${lockExpression}" in ${DHAKA_TIMEZONE} ` +

@@ -45,7 +45,13 @@ const previewAnnouncement = catchAsync(async (req, res) => {
   });
 });
 
-// Post it now, independently of the schedule
+// Post it now, independently of the schedule.
+//
+// Applies to every configured server unless `guildIds` narrows it. The status
+// stays 200 when some servers posted and others failed — `data.summary` carries
+// the counts and each entry its reason. An error status would say nothing
+// happened, and the retry it invites would then be refused by the servers that
+// already posted. Only a total failure raises (in the service).
 const sendAnnouncement = catchAsync(async (req, res) => {
   const result = await announcementService.sendAnnouncementNow(
     req.body,
@@ -55,7 +61,10 @@ const sendAnnouncement = catchAsync(async (req, res) => {
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.OK,
-    message: 'Attendance announcement posted',
+    message:
+      result.summary.posted === result.summary.total
+        ? 'Attendance announcement posted'
+        : `Attendance announcement posted to ${result.summary.posted} of ${result.summary.total} server(s)`,
     data: result,
   });
 });

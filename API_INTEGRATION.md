@@ -13,6 +13,7 @@ Everything below was read out of the source (`src/modules/**`, `src/middlewares/
 3. [Error envelopes (there are five, and they differ)](#3-error-envelopes-there-are-five-and-they-differ)
 4. [Authentication — the four things that will bite you](#4-authentication--the-four-things-that-will-bite-you)
 5. [Dates: everything is an Asia/Dhaka civil date](#5-dates-everything-is-an-asiadhaka-civil-date)
+5A. [Multiple Discord servers](#5a-multiple-discord-servers)
 6. [Recommended Next.js architecture](#6-recommended-nextjs-architecture)
 7. [The integration layer (copy-paste starting point)](#7-the-integration-layer-copy-paste-starting-point)
 8. [Endpoint reference](#8-endpoint-reference)
@@ -282,6 +283,85 @@ export const DHAKA_TIMEZONE = DHAKA;
 ```
 
 Render `DateTime` fields (`submittedAt`, `startedAt`, `nextOpenAt`, …) with `timeZone: 'Asia/Dhaka'` too, so an admin travelling abroad reads the same clock as the schedule.
+
+---
+
+## 5A. Multiple Discord servers
+
+The backend now serves **one or many identical Discord servers** from a single deployment. Most of the API is unchanged; these are the differences a front-end has to handle.
+
+### The server list
+
+`GET /api/discord/servers` 🔐 returns the configured servers. Build any server filter from this rather than hard-coding IDs.
+
+```jsonc
+{ "success": true, "data": [
+  { "guildId": "146…", "label": "Batch A", "name": "Programming Hero B12", "reachable": true,  "unreachableReason": null },
+  { "guildId": "246…", "label": "Batch B", "name": null, "reachable": false, "unreachableReason": "The guild could not be fetched…" }
+] }
+```
+
+**A single-server deployment returns one entry.** Treat one server as the normal case, not a special one: if the list has a single element, hide the filter rather than branching on a separate mode.
+
+### Actions fan out, and can partially succeed
+
+`POST /api/schedule/daily-update/open`, `/lock` and `POST /api/announcement/attendance/send` apply to **every** configured server. Each accepts an optional `guildIds: string[]` to narrow it.
+
+**The important part: partial success is `HTTP 200`, not an error.** If the channel opened in one server and failed in another, the request succeeds and the failure is inside `data`:
+
+```jsonc
+{ "success": true, "message": "Daily update channel opened in 1 of 2 server(s)", "data": {
+  "isOpen": true,
+  "summary": { "total": 2, "succeeded": 1, "failed": 1 },
+  "servers": [
+    { "guildId": "146…", "label": "Batch A", "ok": true,  "value": { "announced": true }, "channelId": "…" },
+    { "guildId": "246…", "label": "Batch B", "ok": false, "error": "Missing Permissions", "channelId": "…" }
+  ]
+} }
+```
+
+So **always read `data.summary.failed`** — a `success: true` does not mean every server worked. Only a total failure returns an error status. An unknown `guildId` is a `400` naming it.
+
+### Daily status gains a server dimension
+
+- `GET /api/daily-status`, `/counts` and `/export` accept an optional **`guildId`** query parameter. Omitted means every server.
+- Every row carries `guildId`, `serverLabel`, and **`serverCount`** — how many configured servers currently hold that Discord account.
+- `serverCount > 1` means the same person appears on another server's rows too. **Do not de-duplicate them.** They owe each server its own attendance and update, so both rows are correct; show the server column (or a small badge) so the repetition reads as intended rather than as a bug.
+- `/counts` returns the seven figures **plus `byServer`**, each entry carrying the same seven figures for one server. `byServer` sums to the combined totals by construction, so a dashboard can show both without a second request.
+- The CSV export gains a leading **`server`** column, and names the server in the filename when filtered.
+
+### The public attendance form
+
+`GET /api/attendance/verify-user` now returns a **`servers`** array — every server the handle is currently a member of, each with its own `alreadySubmitted`:
+
+```jsonc
+{ "data": { "verified": true, "alreadySubmitted": false, "attendanceDate": "2026-08-18",
+  "member": { … },
+  "servers": [
+    { "guildId": "146…", "label": "Batch A", "alreadySubmitted": true  },
+    { "guildId": "246…", "label": "Batch B", "alreadySubmitted": false }
+  ] } }
+```
+
+Top-level `alreadySubmitted` is `true` only when **every** server already has today's row — a student in two servers who submitted in one still has something to do.
+
+`POST /api/attendance/submit` records attendance in **every** server the handle belongs to, in one transaction, and returns the same `servers` array with a `recorded` flag per server. The student submits once; the form does not ask them to pick a server. A `409` still means "already submitted", and now means it for every server they are in.
+
+`GET /api/attendance/window` is **unchanged** — one shared schedule means one window, so it takes no server parameter.
+
+### Status reads are per server
+
+`GET /api/discord/sync/status` reports `servers[]`, each with its own member counts, last sync, reachability, and — importantly — **channel verification**:
+
+```jsonc
+{ "channels": {
+    "dailyUpdate": { "id": "333…", "verified": false,
+      "error": "daily-update channel 333… belongs to guild 246…, not 146…" } } }
+```
+
+That check exists because every server names its channels identically, so a swapped channel ID is invisible in configuration and in Discord. **If one server goes quiet, look here first.**
+
+`GET /api/schedule/daily-update` reports `servers[]` with each channel's live state and last run; `GET /api/announcement/attendance` reports `today.servers[]` with per-server `posted` and `lastOutcome`, and a top-level `today.posted` that is true only when every server has today's message.
 
 ---
 

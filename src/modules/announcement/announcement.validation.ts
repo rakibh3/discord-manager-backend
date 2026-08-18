@@ -144,6 +144,25 @@ const previewAnnouncementValidationSchema = z.object({
  */
 const sendAnnouncementValidationSchema = z.object({
   force: z.boolean().optional(),
+  /**
+   * Restrict the send to named servers. Omitted means every configured server
+   * with a verified attendance channel. Each named server is still subject to
+   * its own once-per-day claim.
+   */
+  guildIds: z
+    .array(
+      z
+        .string({ error: 'Each server ID must be a string' })
+        .trim()
+        .regex(/^\d{17,20}$/, {
+          error: 'Each server ID must be a Discord snowflake (17-20 digits)',
+        }),
+    )
+    .min(1, {
+      error:
+        'Provide at least one server ID, or omit guildIds entirely to post to every configured server',
+    })
+    .optional(),
 });
 
 export const announcementValidation = {
