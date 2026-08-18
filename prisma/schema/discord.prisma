@@ -2,11 +2,28 @@
 // Distinct from `User` in auth.prisma, which is the ADMIN login account.
 // Members are flagged with `isInGuild` on departure, never deleted, so that
 // attendance and daily-update history keeps a valid owner.
+//
+// One row per (server, Discord account). The program runs out of several
+// identical servers, and a person who is in two of them is TWO rows — because
+// membership, join date, departure, display name and the whole attendance
+// history are per-server facts. Merging them into one identity would force
+// every one of those columns into a join table and would put a `guild_id` on
+// `attendances`, `daily_updates` and `reminder_recipients`, which currently
+// inherit their server for free through `member_id`.
 
 model DiscordMember {
-  id              String    @id @default(uuid())
-  discordUserId   String    @unique @map("discord_user_id")
-  discordUsername String    @unique @map("discord_username")
+  id String @id @default(uuid())
+
+  // The configured server this record belongs to. Every read and write in
+  // member sync, ingestion and the dashboard is scoped by it. The departure
+  // reconcile in particular MUST filter on it: an unscoped `updateMany` there
+  // marks the other server's entire directory as departed, which empties the
+  // dashboard denominator and locks that server out of the attendance form,
+  // with no error raised anywhere.
+  guildId String @map("guild_id")
+
+  discordUserId   String    @map("discord_user_id")
+  discordUsername String    @map("discord_username")
   displayName     String?   @map("display_name")
   globalName      String?   @map("global_name")
   avatarUrl       String?   @map("avatar_url")
@@ -25,7 +42,19 @@ model DiscordMember {
   dailyUpdates       DailyUpdate[]
   reminderRecipients ReminderRecipient[]
 
+  // Uniqueness is per server, not global. A Discord handle identifies one
+  // ACCOUNT globally, so two rows holding the same handle are that one person
+  // in two servers — the correct state, and the reason the old global
+  // `@unique` on both columns had to go.
+  @@unique([guildId, discordUserId])
+  @@unique([guildId, discordUsername])
   @@index([discordUsername])
   @@index([isInGuild])
+  // "Who is currently in this server", the shape every scoped read uses.
+  @@index([guildId, isInGuild])
+  // Cross-server overlap: how many servers currently hold this account. Serves
+  // the dashboard's `serverCount` so a person in both servers is explained
+  // rather than looking like a duplicate row.
+  @@index([discordUserId])
   @@map("discord_members")
 }

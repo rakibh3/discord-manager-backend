@@ -53,6 +53,35 @@ const updateScheduleValidationSchema = z
       'Provide at least one of openTime, closeTime, daysOfWeek, or enabled',
   });
 
+/**
+ * `POST /api/schedule/daily-update/open` and `/lock`.
+ *
+ * An empty body means every configured server, which is the ordinary case: one
+ * action applies everywhere. `guildIds` narrows it, for recovering a single
+ * server whose permission was fixed after the others already moved.
+ *
+ * Whether a named ID is actually configured is checked in the service, not
+ * here — the schema cannot know the configured set, and the error must name the
+ * unknown server rather than reading as a format complaint.
+ */
+const channelStateValidationSchema = z.object({
+  guildIds: z
+    .array(
+      z
+        .string({ error: 'Each server ID must be a string' })
+        .trim()
+        .regex(/^\d{17,20}$/, {
+          error: 'Each server ID must be a Discord snowflake (17-20 digits)',
+        }),
+    )
+    .min(1, {
+      error:
+        'Provide at least one server ID, or omit guildIds entirely to act on every configured server',
+    })
+    .optional(),
+});
+
 export const scheduleValidation = {
   updateScheduleValidationSchema,
+  channelStateValidationSchema,
 };

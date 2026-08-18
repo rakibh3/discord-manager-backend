@@ -1,13 +1,18 @@
 import httpStatus from 'http-status';
 
 import config from '@/config';
+import type { TGuildConfig } from '@/config/discord';
 import AppError from '@/errors/AppError';
-import { dispatchAttendanceAnnouncement } from '@/lib/announcement/announcement.dispatch';
+import {
+  dispatchAttendanceAnnouncement,
+  getLastAnnouncementOutcome,
+} from '@/lib/announcement/announcement.dispatch';
 import {
   getAttendanceChannelId,
   resolveMentionTargets,
 } from '@/lib/discord/announcement';
-import { getDiscordConfig } from '@/lib/discord/client';
+import { getConfiguredGuilds } from '@/lib/discord/client';
+import { guildLabel } from '@/lib/discord/fanout';
 import {
   getAnnouncementSchedulerState,
   reloadAnnouncementSchedule,
@@ -71,13 +76,23 @@ const renderForToday = async (
     | 'mentionRoleIds'
     | 'mentionUsernames'
   >,
+  /**
+   * The server to preview for. Mentions and the `<#channel>` link resolve per
+   * server, so a preview has to name one; the first configured server is the
+   * default because a preview is a sanity check on the text, not a promise
+   * about every server's mention resolution. Each server's ACTUAL resolution is
+   * recorded on its own send log.
+   */
+  guild: TGuildConfig | null = getConfiguredGuilds()[0] ?? null,
 ) => {
   const schedule = await channelScheduleRepository.getOrCreateSchedule();
 
-  const mentions = await resolveMentionTargets({
-    roleIds: template.mentionRoleIds,
-    usernames: template.mentionUsernames,
-  });
+  const mentions = guild
+    ? await resolveMentionTargets(guild, {
+        roleIds: template.mentionRoleIds,
+        usernames: template.mentionUsernames,
+      })
+    : { roleIds: [], userIds: [], unresolved: [] };
 
   const renderedBody = renderAnnouncement(template.body, {
     date: getDhakaDate(),
@@ -85,7 +100,7 @@ const renderForToday = async (
     // A second copy of the closing time is precisely the drift this feature
     // exists to remove.
     closeTime: schedule.closeTime,
-    dailyUpdateChannelId: getDiscordConfig()?.channels.dailyUpdate ?? '',
+    dailyUpdateChannelId: guild?.channels.dailyUpdate ?? '',
     attendanceFormLink: config.attendance_form_url ?? '',
     terminationDay: template.terminationDays,
   });
@@ -108,19 +123,36 @@ const buildTodaySummary = async () => {
   const announcementDate = getDhakaDate();
   const logs = await announcementRepository.findLogsForDate(announcementDate);
 
+  // Reported per server. A single `posted` flag would read as "done" the moment
+  // ONE server succeeded, hiding the server that is still silent — which is the
+  // only thing on this payload worth acting on.
+  const servers = getConfiguredGuilds().map((guild) => {
+    const guildLogs = logs.filter((log) => log.guildId === guild.guildId);
+
+    return {
+      guildId: guild.guildId,
+      label: guildLabel(guild),
+      channelId: getAttendanceChannelId(guild),
+      posted: guildLogs.some((log) => log.status === 'POSTED'),
+      lastOutcome: getLastAnnouncementOutcome(guild.guildId),
+      attempts: guildLogs.map((log) => ({
+        attempt: log.attempt,
+        status: log.status,
+        trigger: log.trigger,
+        discordMessageId: log.discordMessageId,
+        unresolvedTargets: log.unresolvedTargets,
+        error: log.error,
+        createdAt: log.createdAt,
+        updatedAt: log.updatedAt,
+      })),
+    };
+  });
+
   return {
     date: announcementDate,
-    posted: logs.some((log) => log.status === 'POSTED'),
-    attempts: logs.map((log) => ({
-      attempt: log.attempt,
-      status: log.status,
-      trigger: log.trigger,
-      discordMessageId: log.discordMessageId,
-      unresolvedTargets: log.unresolvedTargets,
-      error: log.error,
-      createdAt: log.createdAt,
-      updatedAt: log.updatedAt,
-    })),
+    /** True only when EVERY configured server has today's message. */
+    posted: servers.length > 0 && servers.every((server) => server.posted),
+    servers,
   };
 };
 
@@ -158,7 +190,6 @@ const buildAnnouncementResponse = async (
       (name) => `{{${name}}}`,
     ),
     scheduler: getAnnouncementSchedulerState(),
-    channel: { id: getAttendanceChannelId() },
     today: await buildTodaySummary(),
   };
 };
@@ -310,56 +341,100 @@ const previewAnnouncement = async (payload: {
  * mass-mention.
  */
 const sendAnnouncementNow = async (
-  { force = false }: { force?: boolean },
+  { force = false, guildIds }: { force?: boolean; guildIds?: string[] },
   adminId: string,
 ) => {
-  const result = await dispatchAttendanceAnnouncement({
+  if (guildIds?.length) {
+    const known = new Set(getConfiguredGuilds().map((g) => g.guildId));
+    const unknown = guildIds.filter((id) => !known.has(id));
+
+    if (unknown.length > 0) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `Unknown server(s): ${unknown.join(', ')}. Configured servers are listed at GET /api/discord/servers.`,
+      );
+    }
+  }
+
+  const outcomes = await dispatchAttendanceAnnouncement({
     trigger: 'MANUAL',
     force,
     triggeredById: adminId,
+    guildIds,
   });
 
-  if (result.status === 'already-sent') {
+  if (outcomes.length === 0) {
+    throw new AppError(
+      httpStatus.SERVICE_UNAVAILABLE,
+      'No configured server has a verified attendance channel. Check GET /api/discord/sync/status.',
+    );
+  }
+
+  const posted = outcomes.filter((o) => o.result.status === 'posted');
+
+  // Every server already had today's message: that is the 409 a double-clicked
+  // button must produce. Reported only when NONE posted — if one server posted
+  // and another was already claimed, the run did real work and is a success.
+  if (
+    posted.length === 0 &&
+    outcomes.every((o) => o.result.status === 'already-sent')
+  ) {
     throw new AppError(
       httpStatus.CONFLICT,
-      `Today's announcement was already sent at ${result.postedAt.toISOString()} (attempt ${result.attempt}). ` +
+      `Today's announcement was already sent in every targeted server. ` +
         'Send it again with { "force": true } if a second post is genuinely intended.',
     );
   }
 
-  // Only reachable on a manual send when the template is disabled AND the
-  // trigger is SCHEDULED, which cannot happen here — kept so the union is
-  // exhaustive rather than silently falling through to a success response.
-  if (result.status === 'disabled') {
+  if (
+    posted.length === 0 &&
+    outcomes.every((o) => o.result.status === 'disabled')
+  ) {
     throw new AppError(
       httpStatus.SERVICE_UNAVAILABLE,
       'The announcement is disabled.',
     );
   }
 
-  if (result.status === 'failed') {
-    if (result.missingPermission) {
+  // Nothing posted anywhere and at least one hard failure: surface the reason.
+  if (posted.length === 0) {
+    const failure = outcomes.find((o) => o.result.status === 'failed');
+
+    if (failure && failure.result.status === 'failed') {
+      if (failure.result.missingPermission) {
+        throw new AppError(
+          httpStatus.FORBIDDEN,
+          'The bot lacks the "Send Messages" permission on the attendance channel of every targeted server, so it cannot post the announcement. ' +
+            'Grant it in the channel settings and try again — a failed attempt does not consume the day.',
+        );
+      }
+
       throw new AppError(
-        httpStatus.FORBIDDEN,
-        `The bot lacks the "Send Messages" permission on the attendance channel (${getAttendanceChannelId() ?? 'unconfigured'}), so it cannot post the announcement. ` +
-          'Grant it in the channel settings and try again — the failed attempt does not consume today.',
+        httpStatus.SERVICE_UNAVAILABLE,
+        failure.result.notConnected
+          ? 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and the bot logs.'
+          : `The announcement could not be posted in any server: ${failure.result.error}`,
       );
     }
-
-    throw new AppError(
-      httpStatus.SERVICE_UNAVAILABLE,
-      result.notConnected
-        ? 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and the bot logs.'
-        : `The announcement could not be posted: ${result.error}`,
-    );
   }
 
+  // Partial success is a SUCCESS carrying the per-server detail. Posting really
+  // did happen somewhere, and answering an error would invite a retry that
+  // re-posts nothing while looking like the fix.
   return {
-    announcementDate: result.announcementDate,
-    attempt: result.attempt,
-    discordMessageId: result.messageId,
-    unresolvedTargets: result.unresolvedTargets,
-    channelId: getAttendanceChannelId(),
+    announcementDate: getDhakaDate(),
+    summary: {
+      total: outcomes.length,
+      posted: posted.length,
+      failed: outcomes.filter((o) => o.result.status === 'failed').length,
+      alreadySent: outcomes.filter((o) => o.result.status === 'already-sent')
+        .length,
+    },
+    servers: outcomes.map((outcome) => ({
+      guildId: outcome.guildId,
+      label: outcome.label,
+      ...outcome.result,
+    })),
   };
 };
 

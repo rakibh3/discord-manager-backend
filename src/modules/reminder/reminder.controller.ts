@@ -4,8 +4,25 @@ import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
 import { reminderService } from '@/modules/reminder/reminder.service';
+import {
+  REMINDER_CRITERION,
+  type ReminderCriterionValue,
+} from '@/repositories/dailyStatus.repository';
 import { catchAsync } from '@/utils/catchAsync';
+import { resolvePeriod } from '@/utils/dhakaDate';
 import { sendResponse } from '@/utils/sendResponse';
+
+/** `daysOfWeek=0,1,2` as the validated integer array. */
+const readDaysOfWeek = (req: Request): number[] | undefined => {
+  const raw = req.query.daysOfWeek;
+
+  if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
+
+  return raw
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isInteger(value));
+};
 
 /** Paging defaults, mirrored into `meta` so the client can page without guessing. */
 const readPaging = (query: Record<string, unknown>) => ({
@@ -37,7 +54,21 @@ const readReminderId = (req: Request): string => {
 
 // Who would be reminded for a date — the confirm step before anything is sent
 const getTargets = catchAsync(async (req, res) => {
-  const result = await reminderService.previewTargets(req.query.date as string);
+  const result = await reminderService.previewTargets(
+    {
+      period: resolvePeriod({
+        date: req.query.date as string | undefined,
+        from: req.query.from as string | undefined,
+        to: req.query.to as string | undefined,
+        daysOfWeek: readDaysOfWeek(req),
+      }),
+      criterion:
+        (req.query.criterion as ReminderCriterionValue | undefined) ??
+        REMINDER_CRITERION.MISSING_UPDATE,
+      minMissedDays: Number(req.query.minMissedDays ?? 1),
+    },
+    req.query.guildIds as string[] | undefined,
+  );
 
   sendResponse(res, {
     success: true,
@@ -51,7 +82,16 @@ const getTargets = catchAsync(async (req, res) => {
 const sendReminder = catchAsync(async (req, res) => {
   // `auth(UserRole.ADMIN)` populates `req.user` before this runs, so the
   // non-null assertion holds for every route this controller is mounted on.
-  const result = await reminderService.startBroadcast(req.body, req.user!.id);
+  const result = await reminderService.startBroadcast(
+    {
+      period: resolvePeriod(req.body),
+      criterion: req.body.criterion,
+      minMissedDays: req.body.minMissedDays,
+      message: req.body.message,
+      guildIds: req.body.guildIds,
+    },
+    req.user!.id,
+  );
 
   sendResponse(res, {
     success: true,

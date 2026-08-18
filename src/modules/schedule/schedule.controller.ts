@@ -30,26 +30,37 @@ const updateSchedule = catchAsync(async (req, res) => {
   });
 });
 
-// Force the channel open now, without changing the schedule
+// Force the channel open now, without changing the schedule.
+//
+// Applies to every configured server unless `guildIds` narrows it. The status
+// stays 200 when some servers succeeded and others failed — `data.summary`
+// carries the counts and each entry its reason, because reporting an error
+// would wrongly imply that nothing happened anywhere.
 const openChannel = catchAsync(async (req, res) => {
-  const result = await scheduleService.openChannelNow();
+  const result = await scheduleService.openChannelNow(req.body?.guildIds);
 
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.OK,
-    message: 'Daily update channel opened',
+    message:
+      result.summary.failed > 0
+        ? `Daily update channel opened in ${result.summary.succeeded} of ${result.summary.total} server(s)`
+        : 'Daily update channel opened',
     data: result,
   });
 });
 
 // Force the channel locked now, without changing the schedule
 const lockChannel = catchAsync(async (req, res) => {
-  const result = await scheduleService.lockChannelNow();
+  const result = await scheduleService.lockChannelNow(req.body?.guildIds);
 
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.OK,
-    message: 'Daily update channel locked',
+    message:
+      result.summary.failed > 0
+        ? `Daily update channel locked in ${result.summary.succeeded} of ${result.summary.total} server(s)`
+        : 'Daily update channel locked',
     data: result,
   });
 });

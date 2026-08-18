@@ -1,5 +1,6 @@
 import type { Message } from 'discord.js';
 
+import type { TGuildConfig } from '@/config/discord';
 import { mapGuildMemberToPayload } from '@/lib/discord/member.mapper';
 import { upsertMemberPayload } from '@/lib/discord/member.sync';
 import { dailyUpdateRepository } from '@/repositories/dailyUpdate.repository';
@@ -28,22 +29,37 @@ const ACK_EMOJI = '✅';
  * The repair must happen before the insert: `memberId` is a required foreign
  * key. Returns `null` when the author cannot be resolved at all, which is the
  * one case where the message is dropped.
+ *
+ * Everything here is scoped to the server the message came from. The same
+ * account may hold a record in several servers, and this message belongs to
+ * exactly one of them: crediting it to another server's record would mark the
+ * author present where they posted nothing and leave them missing where they
+ * did post. An account known in the OTHER server but not this one is therefore
+ * a miss, and gets a new record for this server rather than reusing or moving
+ * the existing one.
  */
 const resolveMessageAuthor = async (
   message: Message,
+  guildConfig: TGuildConfig,
 ): Promise<string | null> => {
   const authorId = message.author.id;
+  const { guildId } = guildConfig;
 
-  const stored = await memberRepository.findMemberByDiscordUserId(authorId);
+  const stored = await memberRepository.findMemberByDiscordUserId(
+    guildId,
+    authorId,
+  );
   if (stored) return stored.id;
 
   logger.warn(
-    `Author ${authorId} (${message.author.username}) has no member record; fetching from Discord`,
+    `Author ${authorId} (${message.author.username}) has no member record in guild ${guildId}; fetching from Discord`,
   );
 
   // Taken from the message rather than fetched through the client, which keeps
   // this module free of an import cycle back into `client.ts`. The handler has
-  // already confirmed this message came from the configured guild.
+  // already confirmed this message came from a configured guild, and
+  // `mapGuildMemberToPayload` reads the server off the member itself — so the
+  // repaired row can only ever be written under the server it was fetched from.
   const { guild } = message;
   if (!guild) {
     logger.error(
@@ -68,7 +84,10 @@ const resolveMessageAuthor = async (
     return null;
   }
 
-  const repaired = await memberRepository.findMemberByDiscordUserId(authorId);
+  const repaired = await memberRepository.findMemberByDiscordUserId(
+    guildId,
+    authorId,
+  );
   if (!repaired) {
     logger.error(
       `Member ${authorId} still missing after upsert; message ${message.id} dropped`,
@@ -77,7 +96,7 @@ const resolveMessageAuthor = async (
   }
 
   logger.info(
-    `Directory repaired from message ingestion: ${repaired.discordUsername} (${authorId})`,
+    `Directory repaired from message ingestion in guild ${guildId}: ${repaired.discordUsername} (${authorId})`,
   );
 
   return repaired.id;
@@ -106,16 +125,18 @@ const acknowledge = async (message: Message): Promise<void> => {
 /**
  * Stores one `#daily-update` message and acknowledges it.
  *
- * Called from the `messageCreate` gateway handler, which has already applied
- * the channel, author, and content filters. Never throws: a gateway listener
- * has no request to fail, and an unhandled rejection here would surface as a
- * process-level warning while silently losing the message.
+ * Called from the `messageCreate` gateway handler, which has already resolved
+ * the server and applied the channel, author, and content filters. Never
+ * throws: a gateway listener has no request to fail, and an unhandled rejection
+ * here would surface as a process-level warning while silently losing the
+ * message.
  */
 export const ingestDailyUpdateMessage = async (
   message: Message,
+  guildConfig: TGuildConfig,
 ): Promise<void> => {
   try {
-    const memberId = await resolveMessageAuthor(message);
+    const memberId = await resolveMessageAuthor(message, guildConfig);
     if (!memberId) return;
 
     // The civil date comes from when the message was SENT, never from now.

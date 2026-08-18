@@ -20,6 +20,7 @@ import { prisma } from '@/lib/prisma';
 /** The fields the attendance form needs to render a verified badge. */
 const verifiedMemberSelect = {
   id: true,
+  guildId: true,
   discordUserId: true,
   discordUsername: true,
   displayName: true,
@@ -28,6 +29,8 @@ const verifiedMemberSelect = {
 
 export type VerifiedMember = {
   id: string;
+  /** The configured server this record belongs to. */
+  guildId: string;
   discordUserId: string;
   discordUsername: string;
   displayName: string | null;
@@ -35,43 +38,56 @@ export type VerifiedMember = {
 };
 
 /**
- * The member currently in the guild holding this handle, or `null`.
+ * Every server in which this handle currently belongs to a present member.
  *
  * Expects an already-normalized handle — `normalizeDiscordUsername` output.
  * Discord stores handles lowercased, and that normalized form is the only value
- * the sync ever writes, so an exact match is correct here.
+ * the sync ever writes, so an exact match is correct here. Never `startsWith` /
+ * `contains`, which compile to SQL `LIKE`, where `_` is a single-character
+ * wildcard and would match most of the directory.
+ *
+ * Returns a LIST, not a single row, because the handle is unique per server
+ * rather than globally. More than one row means one thing only: a Discord
+ * handle identifies one account, so those rows are the same person present in
+ * several servers. The attendance form uses that to record their submission in
+ * every server they belong to, which is what stops them showing as missing in
+ * one of them.
  *
  * `isInGuild: true` is part of the query rather than a check in the caller: it
- * is served by the `is_in_guild` index, and every other consumer of the
- * directory filters the same way.
+ * is served by the `(guild_id, is_in_guild)` index, and every other consumer of
+ * the directory filters the same way. It is evaluated PER SERVER, so someone
+ * departed from one server and present in another returns only the latter.
  *
- * Returns `null` for both "no such row" and "row exists but the member left".
- * That collapse is intentional. Golden Rule 3 gives them the same outcome — no
- * submission either way — and keeping them indistinguishable means the endpoint
- * cannot be used to learn that a particular person used to be in the server.
+ * Returns an empty array for both "no such row" and "rows exist but the member
+ * left everywhere". That collapse is intentional. Golden Rule 3 gives them the
+ * same outcome — no submission either way — and keeping them indistinguishable
+ * means the endpoint cannot be used to learn that a particular person used to
+ * be in a server.
  *
  * Note that a departed member whose handle was later reclaimed by someone else
  * has been renamed to `<handle>#departed-<discordUserId>` by `member.sync.ts`,
  * so it cannot collide with the live holder of the clean handle.
  */
-const findActiveMemberByUsername = async (
+const findActiveMembersByUsername = async (
   normalizedUsername: string,
-): Promise<VerifiedMember | null> =>
-  prisma.discordMember.findFirst({
+): Promise<VerifiedMember[]> =>
+  prisma.discordMember.findMany({
     where: { discordUsername: normalizedUsername, isInGuild: true },
     select: verifiedMemberSelect,
+    orderBy: { guildId: 'asc' },
   });
 
 /** What daily-update ingestion needs to attribute a message to a member row. */
 export type IngestionMember = {
   id: string;
+  guildId: string;
   discordUserId: string;
   discordUsername: string;
   isInGuild: boolean;
 };
 
 /**
- * The member holding this Discord snowflake, or `null` when none is stored.
+ * The member record for this Discord snowflake IN ONE SERVER, or `null`.
  *
  * Resolution is by `discordUserId` and never by handle. Handles are mutable, so
  * a student who renamed between the last sync and posting would either miss
@@ -79,25 +95,32 @@ export type IngestionMember = {
  * `member.sync.ts` upserts on `discordUserId` to avoid. The snowflake is
  * immutable, and `messageCreate` always carries it.
  *
+ * The server must be named because the same account can hold a record in
+ * several. A message belongs to exactly one server, and crediting it to another
+ * server's record would mark the author present where they posted nothing while
+ * leaving them missing where they did post.
+ *
  * This lookup deliberately does NOT filter `isInGuild: true`, unlike
- * `findActiveMemberByUsername` and every other read of this directory. The
+ * `findActiveMembersByUsername` and every other read of this directory. The
  * asymmetry is load-bearing, so do not "fix" it: the two functions answer
- * different questions. `findActiveMemberByUsername` asks "may this person submit
- * attendance right now?", where a departed member must be refused. This one asks
- * "whose message is this?", and a member who posted at 23:00 and left at 23:30
- * still owns that message. Filtering here would silently drop their update and
- * shrink the day's completion figures with no error raised anywhere.
+ * different questions. `findActiveMembersByUsername` asks "may this person
+ * submit attendance right now?", where a departed member must be refused. This
+ * one asks "whose message is this?", and a member who posted at 23:00 and left
+ * at 23:30 still owns that message. Filtering here would silently drop their
+ * update and shrink the day's completion figures with no error raised anywhere.
  *
  * `isInGuild` is returned rather than filtered on so the caller can log the
  * distinction if it ever matters.
  */
 const findMemberByDiscordUserId = async (
+  guildId: string,
   discordUserId: string,
 ): Promise<IngestionMember | null> =>
   prisma.discordMember.findUnique({
-    where: { discordUserId },
+    where: { guildId_discordUserId: { guildId, discordUserId } },
     select: {
       id: true,
+      guildId: true,
       discordUserId: true,
       discordUsername: true,
       isInGuild: true,
@@ -105,6 +128,6 @@ const findMemberByDiscordUserId = async (
   });
 
 export const memberRepository = {
-  findActiveMemberByUsername,
+  findActiveMembersByUsername,
   findMemberByDiscordUserId,
 };

@@ -5,6 +5,7 @@ import {
 import { type Job, Worker } from 'bullmq';
 
 import config from '@/config';
+import { getGuildConfig } from '@/lib/discord/client';
 import {
   announceClosedDms,
   sendMemberDm,
@@ -46,7 +47,14 @@ export type TLastFallback = {
 };
 
 let worker: Worker<TReminderJobData> | null = null;
-let lastFallback: TLastFallback | null = null;
+/**
+ * The last fallback attempt PER SERVER.
+ *
+ * Keyed rather than singular because a missing `Send Messages` in one server is
+ * exactly the case that matters, and a single slot would let the healthy
+ * server's success overwrite and hide it.
+ */
+const lastFallbacks = new Map<string, TLastFallback>();
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -62,17 +70,25 @@ const describeError = (error: unknown): string =>
  */
 const recordOutcome = async (
   reminderId: string,
-  memberId: string,
+  memberIds: string[],
   status: ReminderDeliveryStatus,
   errorMessage: string | null = null,
 ): Promise<void> => {
-  await reminderRepository.markRecipientOutcome(reminderId, memberId, status, {
-    errorMessage,
-  });
+  // One send, one outcome, applied to every recipient row that send was
+  // responsible for. An account in two configured servers holds a row in each,
+  // and both must reach a terminal state — a row left PENDING would hold the
+  // whole broadcast open, since leftover PENDING rows are what make
+  // `finalizeReminderLog` report FAILED.
+  const settled = await reminderRepository.markRecipientOutcomes(
+    reminderId,
+    memberIds,
+    status,
+    { errorMessage },
+  );
 
   await reminderRepository.incrementCounts(reminderId, {
-    sent: status === ReminderDeliveryStatus.DELIVERED ? 1 : 0,
-    failed: status === ReminderDeliveryStatus.DELIVERED ? 0 : 1,
+    sent: status === ReminderDeliveryStatus.DELIVERED ? settled : 0,
+    failed: status === ReminderDeliveryStatus.DELIVERED ? 0 : settled,
   });
 };
 
@@ -108,21 +124,63 @@ const finalizeIfDrained = async (reminderId: string): Promise<void> => {
 
   if (closed.length === 0) return;
 
-  const result: TFallbackResult = await announceClosedDms(
-    closed.map((recipient) => ({
-      discordUserId: recipient.member.discordUserId,
-      discordUsername: recipient.member.discordUsername,
-    })),
-  );
+  // Grouped by the server each recipient's record belongs to, and posted to
+  // THAT server's reminder channel. A member is only ever mentioned in a server
+  // they are actually in: mentioning them elsewhere would not reach them and
+  // would expose them to a room they are not part of.
+  const byGuild = new Map<string, typeof closed>();
 
-  lastFallback = {
-    reminderId,
-    ranAt: new Date(),
-    ok: result.ok,
-    mentioned: result.ok ? result.mentioned : 0,
-    error: result.ok ? null : result.error,
-    missingPermission: result.ok ? false : result.missingPermission,
-  };
+  for (const recipient of closed) {
+    const bucket = byGuild.get(recipient.member.guildId);
+
+    if (bucket) {
+      bucket.push(recipient);
+      continue;
+    }
+
+    byGuild.set(recipient.member.guildId, [recipient]);
+  }
+
+  // Sequential, and each server independently contained: a missing
+  // `Send Messages` in one server must not stop the other's fallback from
+  // reaching the members who most needed it.
+  for (const [guildId, recipients] of byGuild) {
+    const guild = getGuildConfig(guildId);
+
+    if (!guild) {
+      logger.error(
+        `Cannot post the closed-DM fallback for guild ${guildId}: it is no longer configured. ` +
+          `${recipients.length} member(s) were not announced.`,
+      );
+
+      lastFallbacks.set(guildId, {
+        reminderId,
+        ranAt: new Date(),
+        ok: false,
+        mentioned: 0,
+        error: 'Server is no longer configured',
+        missingPermission: false,
+      });
+      continue;
+    }
+
+    const result: TFallbackResult = await announceClosedDms(
+      guild,
+      recipients.map((recipient) => ({
+        discordUserId: recipient.member.discordUserId,
+        discordUsername: recipient.member.discordUsername,
+      })),
+    );
+
+    lastFallbacks.set(guildId, {
+      reminderId,
+      ranAt: new Date(),
+      ok: result.ok,
+      mentioned: result.ok ? result.mentioned : 0,
+      error: result.ok ? null : result.error,
+      missingPermission: result.ok ? false : result.missingPermission,
+    });
+  }
 };
 
 /**
@@ -146,7 +204,7 @@ const finalizeIfDrained = async (reminderId: string): Promise<void> => {
 const processReminderJob = async (
   job: Job<TReminderJobData>,
 ): Promise<void> => {
-  const { reminderId, memberId, discordUserId } = job.data;
+  const { reminderId, discordUserId, memberIds } = job.data;
 
   const log = await reminderRepository.findReminderLogById(reminderId);
 
@@ -163,19 +221,29 @@ const processReminderJob = async (
     return;
   }
 
-  const recipient = await reminderRepository.findRecipient(
+  const recipients = await reminderRepository.findRecipients(
     reminderId,
-    memberId,
+    memberIds,
   );
 
-  if (!recipient) {
+  if (recipients.length === 0) {
     logger.warn(
-      `No recipient row for member ${memberId} in broadcast ${reminderId}; dropping.`,
+      `No recipient rows for account ${discordUserId} in broadcast ${reminderId}; dropping.`,
     );
     return;
   }
 
-  if (recipient.status !== ReminderDeliveryStatus.PENDING) return;
+  // At least one row still PENDING means there is work to do. A partially
+  // settled set (one server recorded, the other not) still sends: leaving the
+  // second row PENDING forever would stall the broadcast, and this member has
+  // not yet been recorded as reached for that server.
+  const pending = recipients.filter(
+    (recipient) => recipient.status === ReminderDeliveryStatus.PENDING,
+  );
+
+  if (pending.length === 0) return;
+
+  const pendingMemberIds = pending.map((recipient) => recipient.memberId);
 
   // Idempotent: scoped to a PENDING session, so only the first job sets
   // `startedAt` and a cancelled session is never reopened.
@@ -187,7 +255,7 @@ const processReminderJob = async (
     case 'delivered':
       await recordOutcome(
         reminderId,
-        memberId,
+        pendingMemberIds,
         ReminderDeliveryStatus.DELIVERED,
       );
       break;
@@ -198,7 +266,7 @@ const processReminderJob = async (
       // fallback announcement is the system's answer to it.
       await recordOutcome(
         reminderId,
-        memberId,
+        pendingMemberIds,
         ReminderDeliveryStatus.DM_CLOSED,
         'User has DMs disabled',
       );
@@ -207,7 +275,7 @@ const processReminderJob = async (
     case 'failed':
       await recordOutcome(
         reminderId,
-        memberId,
+        pendingMemberIds,
         ReminderDeliveryStatus.FAILED,
         result.error,
       );
@@ -253,18 +321,24 @@ const handleTerminalFailure = async (
 
   if (job.attemptsMade < attempts) return;
 
-  const { reminderId, memberId } = job.data;
+  const { reminderId, memberIds } = job.data;
 
   try {
-    const recipient = await reminderRepository.findRecipient(
+    const recipients = await reminderRepository.findRecipients(
       reminderId,
-      memberId,
+      memberIds,
     );
 
-    if (recipient?.status === ReminderDeliveryStatus.PENDING) {
+    const stillPending = recipients
+      .filter(
+        (recipient) => recipient.status === ReminderDeliveryStatus.PENDING,
+      )
+      .map((recipient) => recipient.memberId);
+
+    if (stillPending.length > 0) {
       await recordOutcome(
         reminderId,
-        memberId,
+        stillPending,
         ReminderDeliveryStatus.FAILED,
         error.message,
       );
@@ -273,7 +347,7 @@ const handleTerminalFailure = async (
     await finalizeIfDrained(reminderId);
   } catch (recordError) {
     logger.error(
-      `Could not record the terminal failure for member ${memberId} in broadcast ${reminderId}:`,
+      `Could not record the terminal failure for member(s) ${memberIds.join(', ')} in broadcast ${reminderId}:`,
       describeError(recordError),
     );
   }
@@ -372,7 +446,7 @@ export type TReminderQueueState = {
   redisError: string | null;
   dmPerSecond: number;
   queueDepth: TQueueDepth | null;
-  lastFallback: TLastFallback | null;
+  lastFallbackByGuild: Record<string, TLastFallback>;
 };
 
 /**
@@ -391,5 +465,5 @@ export const getReminderQueueState =
     redisError: getRedisError(),
     dmPerSecond: config.reminder_dm_per_second,
     queueDepth: await getQueueDepth(),
-    lastFallback,
+    lastFallbackByGuild: Object.fromEntries(lastFallbacks.entries()),
   });

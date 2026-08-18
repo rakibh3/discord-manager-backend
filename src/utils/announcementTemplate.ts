@@ -44,26 +44,48 @@ export const DISCORD_MESSAGE_LIMIT = 2000;
 
 /**
  * The message the program posts by hand today, from `attendenace.txt`, with its
- * placeholders intact.
+ * placeholders intact and Discord's own markdown applied.
+ *
+ * ── The body is Discord markdown, passed through verbatim ─────────────────
+ * `postAttendanceAnnouncement` sends this as plain `content`, and nothing
+ * between here and Discord escapes it — so `#` headings, `**bold**`, `-` lists
+ * and fenced code blocks arrive as formatting rather than as literal
+ * characters. That is why the default carries them: an announcement ~5,000
+ * students skim needs its sections and its deadline findable at a glance, and
+ * an unstyled wall of text is read by nobody.
+ *
+ * Formatting changes nothing about who gets notified. `allowedMentions` still
+ * names every ping explicitly, so an `@everyone` typed into a heading is as
+ * inert as one typed into a paragraph.
+ *
+ * The update format is a bulleted list with bold labels rather than a fenced
+ * code block. A fence is more copy-friendly, but the four field names are what
+ * a student has to read and reproduce, and bold labels in a list is how the
+ * rest of the message is structured — one visual language beats one convenient
+ * copy button.
  *
  * This is what the row is born with, so deploying the feature does not silently
  * change what students read. The file's trailing "Need to mention roles" line is
  * an instruction to the implementer rather than part of the message, and is not
  * stored — the mentions are the structured allowlist, appended after the body.
  */
-export const DEFAULT_ANNOUNCEMENT_BODY = `Date: {{date}}
-সবাই রাত {{close_time}} এর মধ্যে অ্যাটেন্ডেন্স ফর্ম ফিলাপ করবেন এবং {{daily_update_channel_id}} চ্যানেলে নিচের দেওয়া ফরম্যাট অনুযায়ী আপডেট দিবেন, এই চ্যানেলটি রাত {{close_time}} অবধি ওপেন থাকবে।
+export const DEFAULT_ANNOUNCEMENT_BODY = `# 📢 ডেইলি অ্যাটেন্ডেন্স ও আপডেট
+### 📅 Date: {{date}}
 
-অ্যাটেন্ডেন্স ফর্ম : {{attendance_form_link}}
+সবাই রাত **{{close_time}}** এর মধ্যে অ্যাটেন্ডেন্স ফর্ম ফিলাপ করবেন এবং {{daily_update_channel_id}} চ্যানেলে নিচের দেওয়া ফরম্যাট অনুযায়ী আপডেট দিবেন, এই চ্যানেলটি রাত **{{close_time}}** অবধি ওপেন থাকবে।
 
-আপডেট শেয়ার করার ফরম্যাট:
+## 📝 অ্যাটেন্ডেন্স ফর্ম
+{{attendance_form_link}}
+
+## 🧾 আপডেট শেয়ার করার ফরম্যাট
 সবাইকে প্রতিদিন নিচের ফরম্যাট অনুযায়ী এই চ্যানেলে লার্নিং আপডেট দিতে হবে:
-Date:
-Learning Hour:
-What I Learned Today:
-My Target for Tomorrow:
+- **Date:**
+- **Learning Hour:**
+- **What I Learned Today:**
+- **My Target for Tomorrow:**
 
-টার্মিনেশন অ্যালার্ট : টানা {{termination_day}} দিন ডেইলি আপডেট এবং অ্যাটেন্ডেন্স দিতে ব্যর্থ হলে কোনো অগ্রিম নোটিশ ছাড়াই প্রসেস থেকে রিমুভ করা হবে।`;
+## ⚠️ টার্মিনেশন অ্যালার্ট
+টানা **{{termination_day}} দিন** ডেইলি আপডেট এবং অ্যাটেন্ডেন্স দিতে ব্যর্থ হলে কোনো অগ্রিম নোটিশ ছাড়াই প্রসেস থেকে রিমুভ করা হবে।`;
 
 /**
  * Matches a `{{ token }}` with optional inner whitespace.
