@@ -22,8 +22,16 @@ export const REMINDER_QUEUE_NAME = 'reminder-dm';
  */
 export type TReminderJobData = {
   reminderId: string;
-  memberId: string;
   discordUserId: string;
+  /**
+   * Every recipient row this one delivery settles.
+   *
+   * A Discord account that is a member of two configured servers holds a
+   * recipient row in each — the per-server audit must stay answerable — but it
+   * is ONE person with ONE inbox, so it gets ONE DM. The job is keyed on the
+   * account and carries the rows its single outcome applies to.
+   */
+  memberIds: string[];
 };
 
 /**
@@ -69,27 +77,74 @@ export type TReminderTarget = {
   discordUserId: string;
 };
 
+/** One Discord account, and every member record targeted for it. */
+export type TGroupedReminderTarget = {
+  discordUserId: string;
+  memberIds: string[];
+};
+
+/**
+ * Collapses per-server targets into one entry per Discord account.
+ *
+ * This is what makes "one DM per person per broadcast" true. Without it a
+ * student in both servers who missed in both would be DMed twice by the same
+ * bot within one run — annoying at best, and at ~5,000 members it also doubles
+ * the work against a shared rate-limit budget that member sync and the
+ * attendance form depend on.
+ */
+export const groupTargetsByAccount = (
+  targets: TReminderTarget[],
+): TGroupedReminderTarget[] => {
+  const grouped = new Map<string, string[]>();
+
+  for (const target of targets) {
+    const existing = grouped.get(target.discordUserId);
+
+    if (existing) {
+      existing.push(target.memberId);
+      continue;
+    }
+
+    grouped.set(target.discordUserId, [target.memberId]);
+  }
+
+  return [...grouped.entries()].map(([discordUserId, memberIds]) => ({
+    discordUserId,
+    memberIds,
+  }));
+};
+
 /** Enqueued in batches so one 5,000-member broadcast is not one huge pipeline. */
 const ENQUEUE_CHUNK_SIZE = 500;
 
 /**
- * Deterministic job id for one broadcast/member pair.
+ * Deterministic job id for one broadcast/account pair.
+ *
+ * Keyed on the DISCORD ACCOUNT rather than the member record, so an account
+ * targeted through two servers still produces exactly one job and Redis itself
+ * rejects the second.
  *
  * `__` rather than the more natural `:` — BullMQ rejects a custom id containing
  * a colon outright ("Custom Id cannot contain :"), because that is the
- * separator in its own Redis key names. Both ids are UUIDs, which contain `-`
- * but never `_`, so this stays unambiguous.
+ * separator in its own Redis key names. The reminder id is a UUID and the
+ * snowflake is digits, neither of which contains `_`, so this stays unambiguous.
  */
-const buildJobId = (reminderId: string, memberId: string): string =>
-  `${reminderId}__${memberId}`;
+const buildJobId = (reminderId: string, discordUserId: string): string =>
+  `${reminderId}__${discordUserId}`;
 
 /**
- * Enqueues one job per targeted member.
+ * Enqueues one job per targeted Discord ACCOUNT, not per member record.
  *
- * `jobId` is deterministic per pair, so Redis itself rejects a second job for a
- * pair that already has one. That is the cheapest of the three layers standing
- * between a retry and a duplicate DM — the other two being the recipient row's
- * `(reminder_id, member_id)` unique key and the worker's pre-send status check.
+ * `jobId` is deterministic per broadcast/account pair, so Redis itself rejects
+ * a second job for a pair that already has one. That is the cheapest of the
+ * three layers standing between a retry and a duplicate DM — the other two
+ * being the recipient row's `(reminder_id, member_id)` unique key and the
+ * worker's pre-send status check.
+ *
+ * The returned count is therefore the number of PEOPLE being contacted, which
+ * can legitimately be lower than the number of recipient rows. Both figures are
+ * reported separately so the difference reads as the de-duplication it is
+ * rather than as jobs having gone missing.
  *
  * Returns how many jobs were accepted, or `null` when the queue could not take
  * them — Redis unavailable, or the enqueue itself failing. Never throws: the
@@ -105,21 +160,25 @@ export const enqueueReminderJobs = async (
 
   if (!activeQueue) return null;
 
+  // Grouped BEFORE anything is enqueued, so the queue never holds two
+  // deliveries for one account within a broadcast.
+  const grouped = groupTargetsByAccount(targets);
+
   let enqueued = 0;
 
   try {
-    for (let i = 0; i < targets.length; i += ENQUEUE_CHUNK_SIZE) {
-      const chunk = targets.slice(i, i + ENQUEUE_CHUNK_SIZE);
+    for (let i = 0; i < grouped.length; i += ENQUEUE_CHUNK_SIZE) {
+      const chunk = grouped.slice(i, i + ENQUEUE_CHUNK_SIZE);
 
       const jobs = await activeQueue.addBulk(
         chunk.map((target) => ({
           name: 'send-reminder-dm',
           data: {
             reminderId,
-            memberId: target.memberId,
             discordUserId: target.discordUserId,
+            memberIds: target.memberIds,
           },
-          opts: { jobId: buildJobId(reminderId, target.memberId) },
+          opts: { jobId: buildJobId(reminderId, target.discordUserId) },
         })),
       );
 
@@ -127,7 +186,7 @@ export const enqueueReminderJobs = async (
     }
   } catch (error) {
     logger.error(
-      `Failed to enqueue reminder jobs for ${reminderId} (${enqueued} of ${targets.length} accepted before the failure):`,
+      `Failed to enqueue reminder jobs for ${reminderId} (${enqueued} of ${grouped.length} accepted before the failure):`,
       error instanceof Error ? error.message : error,
     );
 

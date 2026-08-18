@@ -2,6 +2,8 @@ import { Prisma } from '@generated/prisma/client';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
+import { getGuildConfig } from '@/lib/discord/client';
+import { guildLabel } from '@/lib/discord/fanout';
 import { isWithinWindow } from '@/lib/scheduler/channelSchedule.scheduler';
 import { attendanceRepository } from '@/repositories/attendance.repository';
 import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
@@ -28,13 +30,27 @@ import { normalizeDiscordUsername } from '@/utils/discordUsername';
  * browser.
  */
 
+/** One server a handle is a current member of, and its state for today. */
+export type TMemberServer = {
+  guildId: string;
+  label: string;
+  alreadySubmitted: boolean;
+};
+
 /** What the form is told about a handle it asked about. */
 type TVerificationResult = {
   verified: boolean;
+  /**
+   * True only when EVERY server the handle belongs to already holds today's
+   * row. A member of two servers who submitted in one still has something to
+   * do, so presenting them as finished would leave them missing in the other.
+   */
   alreadySubmitted: boolean;
   /** Today's Dhaka date, so the form can name it in its own messages. */
   attendanceDate: string;
   member: VerifiedMember | null;
+  /** Every configured server this handle is currently a member of. */
+  servers: TMemberServer[];
 };
 
 export type TSubmitAttendancePayload = {
@@ -49,24 +65,37 @@ const NOT_A_MEMBER_MESSAGE =
   'This Discord username was not found in our Discord server. Please check the username, or join the server first.';
 
 /**
- * Resolves a raw form input to the guild member holding it, or `null`.
+ * Resolves a raw form input to every configured server the handle is currently
+ * a member of. Empty when it belongs to none.
  *
  * Both endpoints go through here so there is exactly one definition of
  * "verified". If the verify endpoint and the submit endpoint ever disagreed
  * about what counts as a member, the form would show a ✅ badge on a handle that
  * cannot submit.
  *
+ * Returns every match rather than the first, because a Discord handle names one
+ * ACCOUNT: several rows are that one person present in several servers, and
+ * picking one arbitrarily would record their attendance in a server they did
+ * not mean and leave them missing in the other.
+ *
  * The repository already collapses "no such row" and "row exists but the member
- * left" into `null`, and this layer keeps them collapsed: both produce the same
- * outcome, and telling them apart would let anyone confirm that a specific
- * person used to be in the server.
+ * left" into an empty result, and this layer keeps them collapsed: both produce
+ * the same outcome, and telling them apart would let anyone confirm that a
+ * specific person used to be in a server.
  */
-const resolveActiveMember = async (
+const resolveActiveMembers = async (
   rawUsername: string,
-): Promise<VerifiedMember | null> => {
+): Promise<VerifiedMember[]> => {
   const normalized = normalizeDiscordUsername(rawUsername);
 
-  return memberRepository.findActiveMemberByUsername(normalized);
+  return memberRepository.findActiveMembersByUsername(normalized);
+};
+
+/** The display name for a server a member belongs to. */
+const labelFor = (guildId: string): string => {
+  const config = getGuildConfig(guildId);
+
+  return config ? guildLabel(config) : guildId;
 };
 
 /**
@@ -115,65 +144,114 @@ const verifyUser = async (
   // day at 23:59:59.9 and report a date that disagrees with the lookup below.
   const attendanceDate = getDhakaDate();
 
-  const member = await resolveActiveMember(rawUsername);
+  const members = await resolveActiveMembers(rawUsername);
 
-  if (!member) {
+  if (members.length === 0) {
     return {
       verified: false,
       alreadySubmitted: false,
       attendanceDate,
       member: null,
+      servers: [],
     };
   }
 
-  const existing = await attendanceRepository.findAttendanceByMemberAndDate(
-    member.id,
+  const existing = await attendanceRepository.findAttendanceForMembersOnDate(
+    members.map((member) => member.id),
     attendanceDate,
   );
+  const submittedMemberIds = new Set(existing.map((row) => row.memberId));
+
+  const servers: TMemberServer[] = members.map((member) => ({
+    guildId: member.guildId,
+    label: labelFor(member.guildId),
+    alreadySubmitted: submittedMemberIds.has(member.id),
+  }));
 
   return {
     verified: true,
-    alreadySubmitted: Boolean(existing),
+    // Only "done" when every server they belong to already has today's row.
+    // Reporting true because ONE server has it would tell a member of two
+    // servers there is nothing left to do, and leave them counted as missing
+    // in the other.
+    alreadySubmitted: servers.every((server) => server.alreadySubmitted),
     attendanceDate,
-    member,
+    // The profile is the account's, so any of the rows carries it; the first is
+    // deterministic because the repository orders by server.
+    member: members[0] ?? null,
+    servers,
   };
 };
 
 /**
- * Records today's attendance for a verified member.
+ * Records today's attendance in EVERY configured server the handle belongs to.
  *
  * Re-verifies membership regardless of any earlier `verifyUser` call: the two
  * requests are separated by however long the student takes to fill the form, and
  * `guildMemberRemove` fires in between often enough to matter in a 5,000-member
- * server.
+ * server. The set resolved here — not the one verify saw — is what gets written.
  *
- * There is deliberately no "have they already submitted?" read before the write.
- * The unique constraint decides, and two simultaneous submissions still resolve
- * to one row — a pre-check would let both through (Golden Rule 7).
+ * One submission covers the person everywhere they are a member. The alternative
+ * (make the student pick a server) would have to list their servers before they
+ * are authenticated in any sense, leaking membership to anyone who can type a
+ * handle — and would reintroduce the failure this design exists to remove: being
+ * marked missing in server B because they picked server A.
+ *
+ * The existence read below is NOT the duplicate check. The unique constraint
+ * still decides that, and two simultaneous submissions still resolve to one row
+ * per server (Golden Rule 7). This read only decides which servers still need a
+ * row, so a student who joined a second server after submitting gets the missing
+ * one written instead of being refused outright.
  */
 const submitAttendance = async (payload: TSubmitAttendancePayload) => {
   const attendanceDate = getDhakaDate();
 
-  const member = await resolveActiveMember(payload.discordUsername);
+  const members = await resolveActiveMembers(payload.discordUsername);
 
-  if (!member) {
+  if (members.length === 0) {
     throw new AppError(httpStatus.NOT_FOUND, NOT_A_MEMBER_MESSAGE);
   }
 
+  const existing = await attendanceRepository.findAttendanceForMembersOnDate(
+    members.map((member) => member.id),
+    attendanceDate,
+  );
+  const submittedMemberIds = new Set(existing.map((row) => row.memberId));
+  const pending = members.filter(
+    (member) => !submittedMemberIds.has(member.id),
+  );
+
+  // Every server they belong to already has today's row: that is the duplicate.
+  if (pending.length === 0) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      `You have already submitted your attendance for today (${attendanceDate}).`,
+    );
+  }
+
   try {
-    const attendance =
-      await attendanceRepository.createAttendanceWithMemberContact({
+    const created = await attendanceRepository.createAttendanceForMembers(
+      pending.map((member) => ({
         memberId: member.id,
         name: payload.name,
         email: payload.email,
         phone: payload.phone,
         attendanceDate,
-      });
+      })),
+    );
 
     return {
       attendanceDate,
-      submittedAt: attendance.submittedAt,
-      member,
+      submittedAt: created[0]?.submittedAt ?? new Date(),
+      member: members[0] ?? null,
+      // Named so the form can tell a member of two servers that both were
+      // recorded, and so a partial top-up reads as the success it is.
+      servers: members.map((member) => ({
+        guildId: member.guildId,
+        label: labelFor(member.guildId),
+        recorded: pending.some((candidate) => candidate.id === member.id),
+        alreadySubmitted: submittedMemberIds.has(member.id),
+      })),
     };
   } catch (error) {
     // P2002 is normally shaped by `globalErrorHandler`, but that handler has no

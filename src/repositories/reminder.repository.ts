@@ -95,6 +95,46 @@ const incrementCounts = async (
 };
 
 /**
+ * Settles SEVERAL recipient rows of one broadcast with the same outcome, and
+ * reports how many were actually changed.
+ *
+ * One Discord account can hold a recipient row in every configured server it
+ * belongs to, but it has one inbox and receives one DM — so one delivery
+ * outcome applies to all of its rows. Scoped to `PENDING` for the same reason
+ * the single-row writer is: a retry must not rewrite an outcome that is already
+ * terminal, and the returned count is what keeps `sentCount` / `failedCount`
+ * honest when some rows were already settled.
+ */
+const markRecipientOutcomes = async (
+  reminderId: string,
+  memberIds: string[],
+  status: ReminderDeliveryStatus,
+  { errorMessage }: { errorMessage?: string | null } = {},
+): Promise<number> => {
+  const result = await prisma.reminderRecipient.updateMany({
+    where: {
+      reminderId,
+      memberId: { in: memberIds },
+      status: ReminderDeliveryStatus.PENDING,
+    },
+    data: {
+      status,
+      errorMessage: errorMessage ?? null,
+      sentAt: status === ReminderDeliveryStatus.DELIVERED ? new Date() : null,
+    },
+  });
+
+  return result.count;
+};
+
+/** The recipient rows of one broadcast for a set of member records. */
+const findRecipients = async (reminderId: string, memberIds: string[]) =>
+  prisma.reminderRecipient.findMany({
+    where: { reminderId, memberId: { in: memberIds } },
+    select: { memberId: true, status: true },
+  });
+
+/**
  * Moves a broadcast from PENDING to PROCESSING on its first delivered job.
  *
  * Scoped to `status: PENDING` and written as an `updateMany` so that every job
@@ -263,6 +303,7 @@ const listClosedDmRecipients = async (reminderId: string) =>
       memberId: true,
       member: {
         select: {
+          guildId: true,
           discordUserId: true,
           discordUsername: true,
           displayName: true,
@@ -389,6 +430,8 @@ const listRecipients = async (
 };
 
 export const reminderRepository = {
+  markRecipientOutcomes,
+  findRecipients,
   createReminderLog,
   addRecipients,
   markRecipientOutcome,

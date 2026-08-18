@@ -60,8 +60,55 @@ const createAttendanceWithMemberContact = async (
   });
 
 /**
+ * Records the day's attendance for SEVERAL member records at once, and carries
+ * the submitted contact details onto each of their directory entries.
+ *
+ * One transaction for all of them, deliberately. A handle that belongs to two
+ * configured servers is two member records, and a student submitting once must
+ * end up present in both or in neither — a partial commit would leave them
+ * recorded in one server and silently missing in the other, which is the exact
+ * failure multi-server support exists to remove.
+ *
+ * `memberIds` are the records that still need a row; ones that already have
+ * today's attendance are filtered out by the caller, so a student who joined a
+ * second server after submitting gets the missing row written without the
+ * existing one being touched.
+ */
+const createAttendanceForMembers = async (
+  inputs: CreateAttendanceInput[],
+): Promise<Attendance[]> =>
+  prisma.$transaction(async (tx) => {
+    const created: Attendance[] = [];
+
+    for (const input of inputs) {
+      created.push(await tx.attendance.create({ data: input }));
+
+      await tx.discordMember.update({
+        where: { id: input.memberId },
+        data: { email: input.email, phone: input.phone },
+      });
+    }
+
+    return created;
+  });
+
+/**
+ * Which of these member records already have a submission on this day.
+ *
+ * Backs both the per-server `alreadySubmitted` answer on verify-user and the
+ * "all servers already recorded means duplicate, some means write the rest"
+ * rule on submit.
+ */
+const findAttendanceForMembersOnDate = async (
+  memberIds: string[],
+  attendanceDate: string,
+): Promise<Attendance[]> =>
+  prisma.attendance.findMany({
+    where: { memberId: { in: memberIds }, attendanceDate },
+  });
+
+/**
  * The submission for one member on one day, or `null`.
- * Backs the `alreadySubmitted` flag on the verify-user endpoint.
  * Served by the `(member_id, attendance_date)` unique index.
  */
 const findAttendanceByMemberAndDate = async (
@@ -101,6 +148,8 @@ const listAttendanceByDate = async (attendanceDate: string) =>
 
 export const attendanceRepository = {
   createAttendanceWithMemberContact,
+  createAttendanceForMembers,
+  findAttendanceForMembersOnDate,
   findAttendanceByMemberAndDate,
   listAttendanceByDate,
 };

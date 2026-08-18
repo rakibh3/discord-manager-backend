@@ -77,21 +77,21 @@
 
 ## 9. Attendance form across servers
 
-- [ ] 9.1 Change the shared verification helper in `attendance.service.ts` to resolve a handle to the set of servers it is a current member of, used by both `verify-user` and `submit`.
-- [ ] 9.2 Extend `verify-user` to report `verified`, the member profile, `servers`, and a per-server `alreadySubmitted`, keeping the 200-for-unknown-handle behaviour and the not-found/departed collapse.
-- [ ] 9.3 Change `submit` to write one attendance row per resolved server inside one `$transaction`, plus the contact-detail update on each server's directory entry.
-- [ ] 9.4 Implement the duplicate rule: all servers already recorded → duplicate error naming the date; some recorded → write the missing ones and return success naming the servers recorded.
-- [ ] 9.5 Confirm P2002 detection still matches the documented `JSON.stringify(err.meta)` contains `attendance_date` path under the driver adapter.
-- [ ] 9.6 Leave `GET /api/attendance/window` untouched and confirm it still performs no Discord call.
+- [x] 9.1 Change the shared verification helper in `attendance.service.ts` to resolve a handle to the set of servers it is a current member of, used by both `verify-user` and `submit`.
+- [x] 9.2 Extend `verify-user` to report `verified`, the member profile, `servers`, and a per-server `alreadySubmitted`, keeping the 200-for-unknown-handle behaviour and the not-found/departed collapse.
+- [x] 9.3 Change `submit` to write one attendance row per resolved server inside one `$transaction`, plus the contact-detail update on each server's directory entry.
+- [x] 9.4 Implement the duplicate rule: all servers already recorded → duplicate error naming the date; some recorded → write the missing ones and return success naming the servers recorded.
+- [x] 9.5 Confirm P2002 detection still matches the documented `JSON.stringify(err.meta)` contains `attendance_date` path under the driver adapter.
+- [x] 9.6 Leave `GET /api/attendance/window` untouched and confirm it still performs no Discord call.
 - [ ] 9.7 Verify a handle in both servers submits once and appears present in both; verify a handle in one server is unaffected.
 
 ## 10. Reminder broadcast and queue
 
-- [ ] 10.1 Build the target list across servers, creating one recipient row per member record, and group by `discordUserId` before enqueuing.
-- [ ] 10.2 Change the job ID to `<reminderId>__<discordUserId>` and the payload to `{ reminderId, discordUserId, memberIds }`; confirm no `:` appears in the ID.
-- [ ] 10.3 Make the pre-send re-read check every recipient row the job settles, and the outcome write settle them all in one `updateMany`.
+- [x] 10.1 Build the target list across servers, creating one recipient row per member record, and group by `discordUserId` before enqueuing.
+- [x] 10.2 Change the job ID to `<reminderId>__<discordUserId>` and the payload to `{ reminderId, discordUserId, memberIds }`; confirm no `:` appears in the ID.
+- [x] 10.3 Make the pre-send re-read check every recipient row the job settles, and the outcome write settle them all in one `updateMany`.
 - [ ] 10.4 Report `targetCount` (recipient rows) and `uniqueRecipients` (jobs) separately on the status read, plus a per-server breakdown.
-- [ ] 10.5 Group `DM_CLOSED` recipients by `guildId` and post each group to that server's reminder channel, keeping `allowedMentions: { parse: [], users }` and the 50-mention chunking.
+- [x] 10.5 Group `DM_CLOSED` recipients by `guildId` and post each group to that server's reminder channel, keeping `allowedMentions: { parse: [], users }` and the 50-mention chunking.
 - [ ] 10.6 Report `lastFallback` per server so a missing `Send Messages` in one server is visible.
 - [ ] 10.7 Accept an optional `guildIds` restriction on `POST /send`, keeping the same-date 409 global.
 - [ ] 10.8 Verify a member of both servers who missed in both receives exactly one DM and has both recipient rows settled.

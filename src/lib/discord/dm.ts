@@ -1,10 +1,7 @@
 import { ChannelType, DiscordAPIError, type TextChannel } from 'discord.js';
 
-import {
-  getDiscordClient,
-  getDiscordConfig,
-  isDiscordConnected,
-} from '@/lib/discord/client';
+import type { TGuildConfig } from '@/config/discord';
+import { getDiscordClient, isDiscordConnected } from '@/lib/discord/client';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('ReminderDM');
@@ -178,40 +175,37 @@ export type TFallbackResult =
 const MENTIONS_PER_MESSAGE = 50;
 
 /**
- * The configured reminder channel, or `null`.
+ * One server's reminder channel, or `null`.
  *
- * Resolved by ID from `REMINDER_CHANNEL_ID` — never by name, per the rule that
- * no logic keys off a channel's name. The guild check keeps a mistyped ID from
- * mass-mentioning members in some other server's channel.
+ * Resolved by ID from that server's configured channel — never by name, per the
+ * rule that no logic keys off a channel's name. The guild check keeps a mistyped
+ * or swapped ID from mass-mentioning members in some other server's channel:
+ * these messages @-mention real people, and mentioning them somewhere they are
+ * not a member is both useless and visible to everyone who is.
  */
-const resolveReminderChannel = async (): Promise<TextChannel | null> => {
-  const config = getDiscordConfig();
-
-  if (!config) {
-    logger.error('Discord is not configured; cannot resolve the channel.');
-    return null;
-  }
-
+const resolveReminderChannel = async (
+  guild: TGuildConfig,
+): Promise<TextChannel | null> => {
   if (!isDiscordConnected()) {
     logger.error('Discord bot is not connected; cannot resolve the channel.');
     return null;
   }
 
-  const channelId = config.channels.reminder;
+  const channelId = guild.channels.reminder;
 
   try {
     const channel = await getDiscordClient().channels.fetch(channelId);
 
     if (!channel || channel.type !== ChannelType.GuildText) {
       logger.error(
-        `REMINDER_CHANNEL_ID ${channelId} is not a text channel in this server.`,
+        `Reminder channel ${channelId} for guild ${guild.guildId} is not a text channel.`,
       );
       return null;
     }
 
-    if (channel.guild.id !== config.guildId) {
+    if (channel.guild.id !== guild.guildId) {
       logger.error(
-        `REMINDER_CHANNEL_ID ${channelId} belongs to guild ${channel.guild.id}, not the configured ${config.guildId}.`,
+        `Reminder channel ${channelId} belongs to guild ${channel.guild.id}, not the configured ${guild.guildId}.`,
       );
       return null;
     }
@@ -219,7 +213,7 @@ const resolveReminderChannel = async (): Promise<TextChannel | null> => {
     return channel;
   } catch (error) {
     logger.error(
-      `Could not fetch reminder channel ${channelId}:`,
+      `Could not fetch reminder channel ${channelId} for guild ${guild.guildId}:`,
       describeError(error),
     );
     return null;
@@ -227,8 +221,13 @@ const resolveReminderChannel = async (): Promise<TextChannel | null> => {
 };
 
 /**
- * Posts the closed-DM fallback: the members a DM could not reach, mentioned in
- * `#daily-update-reminder` so they still find out.
+ * Posts the closed-DM fallback for ONE server: the members a DM could not
+ * reach, mentioned in that server's `#daily-update-reminder` so they still find
+ * out.
+ *
+ * Called once per server with only that server's members. A member is only ever
+ * mentioned in a server they actually belong to — mentioning them elsewhere
+ * would not notify them and would expose them to a room they are not in.
  *
  * ── allowedMentions ───────────────────────────────────────────────────────
  * Every message sets `parse: []` alongside an explicit `users` list. `parse: []`
@@ -239,13 +238,14 @@ const resolveReminderChannel = async (): Promise<TextChannel | null> => {
  * quietly, and this is a one-line guarantee that it cannot happen.
  */
 export const announceClosedDms = async (
+  guild: TGuildConfig,
   members: TFallbackMember[],
 ): Promise<TFallbackResult> => {
   if (members.length === 0) {
     return { ok: true, messagesPosted: 0, mentioned: 0 };
   }
 
-  const channel = await resolveReminderChannel();
+  const channel = await resolveReminderChannel(guild);
 
   if (!channel) {
     return {
