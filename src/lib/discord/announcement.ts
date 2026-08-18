@@ -1,9 +1,9 @@
 import { ChannelType, DiscordAPIError, type TextChannel } from 'discord.js';
 
+import type { TGuildConfig } from '@/config/discord';
 import {
+  fetchGuild,
   getDiscordClient,
-  getDiscordConfig,
-  getGuild,
   isDiscordConnected,
 } from '@/lib/discord/client';
 import { memberRepository } from '@/repositories/member.repository';
@@ -38,52 +38,48 @@ const describeError = (error: unknown): string =>
 /**
  * The configured attendance channel, or `null`.
  *
- * Resolved by ID from `ATTENDANCE_CHANNEL_ID` — never by name, per the rule that
- * no logic keys off a channel's name. The guild check keeps a mistyped ID from
- * posting a mass-mention into some other server's channel.
+ * Resolved by ID from that server's configured channel — never by name, per the
+ * rule that no logic keys off a channel's name. The guild check keeps a mistyped
+ * or swapped ID from posting a mass-mention into some other server's channel —
+ * which, since every server names this channel identically, would otherwise look
+ * entirely correct in the logs.
  */
-export const resolveAttendanceChannel =
-  async (): Promise<TextChannel | null> => {
-    const config = getDiscordConfig();
+export const resolveAttendanceChannel = async (
+  guild: TGuildConfig,
+): Promise<TextChannel | null> => {
+  if (!isDiscordConnected()) {
+    logger.error('Discord bot is not connected; cannot resolve the channel.');
+    return null;
+  }
 
-    if (!config) {
-      logger.error('Discord is not configured; cannot resolve the channel.');
-      return null;
-    }
+  const channelId = guild.channels.attendance;
 
-    if (!isDiscordConnected()) {
-      logger.error('Discord bot is not connected; cannot resolve the channel.');
-      return null;
-    }
+  try {
+    const channel = await getDiscordClient().channels.fetch(channelId);
 
-    const channelId = config.channels.attendance;
-
-    try {
-      const channel = await getDiscordClient().channels.fetch(channelId);
-
-      if (!channel || channel.type !== ChannelType.GuildText) {
-        logger.error(
-          `ATTENDANCE_CHANNEL_ID ${channelId} is not a text channel in this server.`,
-        );
-        return null;
-      }
-
-      if (channel.guild.id !== config.guildId) {
-        logger.error(
-          `ATTENDANCE_CHANNEL_ID ${channelId} belongs to guild ${channel.guild.id}, not the configured ${config.guildId}.`,
-        );
-        return null;
-      }
-
-      return channel;
-    } catch (error) {
+    if (!channel || channel.type !== ChannelType.GuildText) {
       logger.error(
-        `Could not fetch attendance channel ${channelId}:`,
-        describeError(error),
+        `Attendance channel ${channelId} for guild ${guild.guildId} is not a text channel.`,
       );
       return null;
     }
-  };
+
+    if (channel.guild.id !== guild.guildId) {
+      logger.error(
+        `Attendance channel ${channelId} belongs to guild ${channel.guild.id}, not the configured ${guild.guildId}.`,
+      );
+      return null;
+    }
+
+    return channel;
+  } catch (error) {
+    logger.error(
+      `Could not fetch attendance channel ${channelId} for guild ${guild.guildId}:`,
+      describeError(error),
+    );
+    return null;
+  }
+};
 
 export type TResolvedMentions = {
   roleIds: string[];
@@ -111,19 +107,22 @@ export type TResolvedMentions = {
  * Never throws. A failure to read the guild's roles degrades to "no roles
  * resolved", which posts the message without those pings.
  */
-export const resolveMentionTargets = async ({
-  roleIds,
-  usernames,
-}: {
-  roleIds: string[];
-  usernames: string[];
-}): Promise<TResolvedMentions> => {
+export const resolveMentionTargets = async (
+  guildConfig: TGuildConfig,
+  {
+    roleIds,
+    usernames,
+  }: {
+    roleIds: string[];
+    usernames: string[];
+  },
+): Promise<TResolvedMentions> => {
   const resolvedRoleIds: string[] = [];
   const resolvedUserIds: string[] = [];
   const unresolved: string[] = [];
 
   if (roleIds.length > 0) {
-    const guild = await getGuild();
+    const guild = await fetchGuild(guildConfig.guildId);
 
     if (!guild) {
       logger.error(
@@ -153,8 +152,15 @@ export const resolveMentionTargets = async ({
 
   for (const username of usernames) {
     try {
-      const member =
-        await memberRepository.findActiveMemberByUsername(username);
+      // Resolved WITHIN this server. A handle that belongs to the other server
+      // only is genuinely unresolvable here — mentioning them would not notify
+      // anyone in this channel — so it is recorded as unresolved for this
+      // server and the message still goes out.
+      const members =
+        await memberRepository.findActiveMembersByUsername(username);
+      const member = members.find(
+        (candidate) => candidate.guildId === guildConfig.guildId,
+      );
 
       if (member) {
         resolvedUserIds.push(member.discordUserId);
@@ -239,17 +245,16 @@ const MAX_NONCE_LENGTH = 25;
  * the nonce covers the seconds of one HTTP call's retries, the claim covers the
  * day.
  */
-export const postAttendanceAnnouncement = async ({
-  content,
-  mentions,
-  nonce,
-}: TPostAnnouncementInput): Promise<TAnnouncementPostResult> => {
-  const channel = await resolveAttendanceChannel();
+export const postAttendanceAnnouncement = async (
+  guild: TGuildConfig,
+  { content, mentions, nonce }: TPostAnnouncementInput,
+): Promise<TAnnouncementPostResult> => {
+  const channel = await resolveAttendanceChannel(guild);
 
   if (!channel) {
     return {
       ok: false,
-      error: 'The attendance channel could not be resolved.',
+      error: `The attendance channel for guild ${guild.guildId} could not be resolved.`,
       missingPermission: false,
     };
   }
@@ -294,6 +299,6 @@ export const postAttendanceAnnouncement = async ({
   }
 };
 
-/** The configured channel ID, for status payloads. */
-export const getAttendanceChannelId = (): string | null =>
-  getDiscordConfig()?.channels.attendance ?? null;
+/** One server's configured channel ID, for status payloads. */
+export const getAttendanceChannelId = (guild: TGuildConfig): string =>
+  guild.channels.attendance;

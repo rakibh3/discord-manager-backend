@@ -26,7 +26,7 @@
 - [x] 3.6 Confirm the degraded-intent retry still rebuilds the client, re-registers handlers, and applies to every server at once.
 - [x] 3.7 On ready, verify every configured channel ID (attendance, daily-update, reminder) resolves to a text channel in the server it was configured under; report and exclude a server that fails, leaving the others running.
 - [ ] 3.8 Verify a deliberately swapped configuration is caught: exchange the two servers' daily-update channel IDs and confirm startup refuses both servers, rather than the mistake first surfacing as ingestion silently dropping every message.
-- [ ] 3.9 Surface channel-verification failures on `/api/discord/sync/status` alongside reachability, naming the channel and the reason.
+- [x] 3.9 Surface channel-verification failures on `/api/discord/sync/status` alongside reachability, naming the channel and the reason.
 
 ## 4. Member sync per server (highest-risk work)
 
@@ -72,7 +72,7 @@
 - [ ] 8.5 Add `guildId` to the closed `SORT_COLUMNS` allowlist; confirm the filter is a bound parameter and nothing new is interpolated.
 - [ ] 8.6 Update the "Columns these queries depend on" comment at the top of `dailyStatus.repository.ts` to include `discord_members.guild_id`.
 - [ ] 8.7 Extend the reminder target query to return the member's `guildId` and to span every server, or one named server.
-- [ ] 8.8 Add `guildId` to the announcement repository's claim, reclaim, and today-status reads.
+- [x] 8.8 Add `guildId` to the announcement repository's claim, reclaim, and today-status reads.
 - [ ] 8.9 Verify the page query and the counts query return the same totals under every combination of server filter, status filter, and search.
 
 ## 9. Attendance form across servers
@@ -90,30 +90,30 @@
 - [x] 10.1 Build the target list across servers, creating one recipient row per member record, and group by `discordUserId` before enqueuing.
 - [x] 10.2 Change the job ID to `<reminderId>__<discordUserId>` and the payload to `{ reminderId, discordUserId, memberIds }`; confirm no `:` appears in the ID.
 - [x] 10.3 Make the pre-send re-read check every recipient row the job settles, and the outcome write settle them all in one `updateMany`.
-- [ ] 10.4 Report `targetCount` (recipient rows) and `uniqueRecipients` (jobs) separately on the status read, plus a per-server breakdown.
+- [x] 10.4 Report `targetCount` (recipient rows) and `uniqueRecipients` (jobs) separately on the status read, plus a per-server breakdown.
 - [x] 10.5 Group `DM_CLOSED` recipients by `guildId` and post each group to that server's reminder channel, keeping `allowedMentions: { parse: [], users }` and the 50-mention chunking.
-- [ ] 10.6 Report `lastFallback` per server so a missing `Send Messages` in one server is visible.
-- [ ] 10.7 Accept an optional `guildIds` restriction on `POST /send`, keeping the same-date 409 global.
+- [x] 10.6 Report `lastFallback` per server so a missing `Send Messages` in one server is visible.
+- [x] 10.7 Accept an optional `guildIds` restriction on `POST /send`, keeping the same-date 409 global.
 - [ ] 10.8 Verify a member of both servers who missed in both receives exactly one DM and has both recipient rows settled.
 - [ ] 10.9 Verify the rate limiter still paces the whole queue rather than per server.
 
 ## 11. Announcement across servers
 
-- [ ] 11.1 Change `announcement.ts` to post to one named server's attendance channel, resolving mentions within that server.
-- [ ] 11.2 Change `announcement.dispatch.ts` to claim, send, and record per server, using `forEachGuild`.
-- [ ] 11.3 Change the nonce to `<guildId>-<announcementDate>-<attempt>` and keep `enforceNonce: true` on every send.
-- [ ] 11.4 Keep the template, its schedule, its mention allowlist, and the `mentionEveryone` flag as one shared row; register the cron task once and fan out inside it.
-- [ ] 11.5 Record unresolved mention targets per server, and keep an unresolved target from ever withholding that server's message.
-- [ ] 11.6 Change `findUnsupportedPlaceholders` validation unchanged, but validate saved mention handles against the union of configured servers.
-- [ ] 11.7 Extend `GET /api/announcement/attendance` to report `today.posted` and the last outcome per server, and the manual send to accept an optional `guildIds`.
+- [x] 11.1 Change `announcement.ts` to post to one named server's attendance channel, resolving mentions within that server.
+- [x] 11.2 Change `announcement.dispatch.ts` to claim, send, and record per server, using `forEachGuild`.
+- [x] 11.3 Change the nonce to `<guildId>-<announcementDate>-<attempt>` and keep `enforceNonce: true` on every send.
+- [x] 11.4 Keep the template, its schedule, its mention allowlist, and the `mentionEveryone` flag as one shared row; register the cron task once and fan out inside it.
+- [x] 11.5 Record unresolved mention targets per server, and keep an unresolved target from ever withholding that server's message.
+- [x] 11.6 Change `findUnsupportedPlaceholders` validation unchanged, but validate saved mention handles against the union of configured servers.
+- [x] 11.7 Extend `GET /api/announcement/attendance` to report `today.posted` and the last outcome per server, and the manual send to accept an optional `guildIds`.
 - [ ] 11.8 Verify a forced second send claims the next attempt number for the named server only.
 
 ## 12. HTTP surface and validation
 
 - [ ] 12.1 Add the optional `guildId` query parameter to the daily-status list, counts, and export validation schemas, rejecting an unconfigured value with a 400 that names it.
 - [ ] 12.2 Add `guildId`, `serverLabel`, and `serverCount` to the daily-status row serialization and a `server` column to the CSV export, including the server in the export filename when filtered.
-- [ ] 12.3 Add the admin-only endpoint that lists the configured servers with their labels and reachability.
-- [ ] 12.4 Extend `/api/discord/sync/status` to report per-server sync state and reachability, and `POST /sync` to accept an optional `guildId`.
+- [x] 12.3 Add the admin-only endpoint that lists the configured servers with their labels and reachability.
+- [x] 12.4 Extend `/api/discord/sync/status` to report per-server sync state and reachability, and `POST /sync` to accept an optional `guildId`.
 - [ ] 12.5 Confirm every fan-out controller answers 200 with `summary.failed > 0` on partial success and an error status only when every server failed.
 - [ ] 12.6 Update `postman-collection.json` with the new parameters and per-server response shapes.
 

@@ -2,12 +2,17 @@ import { Prisma } from '@generated/prisma/client';
 import type { AnnouncementTrigger } from '@generated/prisma/enums';
 
 import config from '@/config';
+import type { TGuildConfig } from '@/config/discord';
 import {
   getAttendanceChannelId,
   postAttendanceAnnouncement,
   resolveMentionTargets,
 } from '@/lib/discord/announcement';
-import { getDiscordConfig, isDiscordConnected } from '@/lib/discord/client';
+import {
+  getGuildsWithVerifiedChannel,
+  isDiscordConnected,
+} from '@/lib/discord/client';
+import { guildLabel } from '@/lib/discord/fanout';
 import { announcementRepository } from '@/repositories/announcement.repository';
 import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
 import {
@@ -87,19 +92,31 @@ export type TLastAnnouncementOutcome = {
   result: TDispatchResult;
 };
 
-let lastOutcome: TLastAnnouncementOutcome | null = null;
+/**
+ * Keyed per server, for the same reason the scheduler's `lastRun` is: a missing
+ * `Send Messages` in one server is the case worth seeing, and a single slot
+ * would let the healthy server's success overwrite it.
+ */
+const lastOutcomes = new Map<string, TLastAnnouncementOutcome>();
 
-export const getLastAnnouncementOutcome = (): TLastAnnouncementOutcome | null =>
-  lastOutcome;
+export const getLastAnnouncementOutcome = (
+  guildId: string,
+): TLastAnnouncementOutcome | null => lastOutcomes.get(guildId) ?? null;
+
+export const getLastAnnouncementOutcomes = (): Record<
+  string,
+  TLastAnnouncementOutcome
+> => Object.fromEntries(lastOutcomes.entries());
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 const record = (
+  guildId: string,
   trigger: AnnouncementTrigger,
   result: TDispatchResult,
 ): TDispatchResult => {
-  lastOutcome = { ranAt: new Date(), trigger, result };
+  lastOutcomes.set(guildId, { ranAt: new Date(), trigger, result });
 
   return result;
 };
@@ -115,13 +132,15 @@ const isUniqueViolation = (error: unknown): boolean =>
  * a second copy is exactly the drift this feature exists to remove. The date is
  * the Dhaka civil date, never a slice of an ISO string.
  */
-const buildContext = async (terminationDay: number) => {
+const buildContext = async (guild: TGuildConfig, terminationDay: number) => {
   const schedule = await channelScheduleRepository.getOrCreateSchedule();
 
   return {
     date: getDhakaDate(),
     closeTime: schedule.closeTime,
-    dailyUpdateChannelId: getDiscordConfig()?.channels.dailyUpdate ?? '',
+    // THIS server's channel. A `<#id>` link to the other server's channel would
+    // render as a dead reference for everyone reading it here.
+    dailyUpdateChannelId: guild.channels.dailyUpdate,
     attendanceFormLink: config.attendance_form_url ?? '',
     terminationDay,
   };
@@ -141,6 +160,7 @@ type TClaimOutcome =
   | { kind: 'error'; error: string };
 
 const claim = async ({
+  guildId,
   announcementDate,
   attempt,
   trigger,
@@ -148,6 +168,7 @@ const claim = async ({
   triggeredById,
   allowReclaim,
 }: {
+  guildId: string;
   announcementDate: string;
   attempt: number;
   trigger: AnnouncementTrigger;
@@ -157,6 +178,7 @@ const claim = async ({
 }): Promise<TClaimOutcome> => {
   try {
     const log = await announcementRepository.claimDay({
+      guildId,
       announcementDate,
       attempt,
       trigger,
@@ -174,6 +196,7 @@ const claim = async ({
   // Somebody else holds this attempt. Which of them, and whether this run may
   // take it back, depends on where they got to.
   const existing = await announcementRepository.findAttempt(
+    guildId,
     announcementDate,
     attempt,
   );
@@ -193,6 +216,7 @@ const claim = async ({
   }
 
   const reclaimed = await announcementRepository.reclaimFailedDay({
+    guildId,
     announcementDate,
     attempt,
     trigger,
@@ -220,46 +244,39 @@ const claim = async ({
  * not connected, a channel that refuses the message — comes back as a
  * `TDispatchResult` and is stored as `lastOutcome`.
  */
-export const dispatchAttendanceAnnouncement = async ({
-  trigger,
-  force = false,
-  triggeredById = null,
-}: TDispatchInput): Promise<TDispatchResult> => {
+/**
+ * The servers an announcement run targets: those whose attendance channel
+ * passed ownership verification, optionally narrowed to named ones.
+ *
+ * A server whose channel resolves into a different guild is excluded rather
+ * than posted to — posting there would put this server's message in front of
+ * the other server's students while the log recorded a success.
+ */
+const targetGuilds = (guildIds?: string[]): TGuildConfig[] => {
+  const verified = getGuildsWithVerifiedChannel('attendance');
+
+  if (!guildIds?.length) return verified;
+
+  return verified.filter((guild) => guildIds.includes(guild.guildId));
+};
+
+const dispatchForGuild = async (
+  guild: TGuildConfig,
+  template: Awaited<ReturnType<typeof announcementRepository.getOrCreateTemplate>>,
+  { trigger, force, triggeredById }: Required<TDispatchInput>,
+): Promise<TDispatchResult> => {
   const announcementDate = getDhakaDate();
+  const guildId = guild.guildId;
 
   try {
-    const template = await announcementRepository.getOrCreateTemplate();
-
-    // A disabled schedule stops the timed post and nothing else. A manual send
-    // is an admin acting deliberately, and must still work — that is what makes
-    // `enabled: false` a pause rather than a lockout.
-    if (!template.enabled && trigger === 'SCHEDULED') {
-      logger.info(
-        'Announcement schedule is disabled; skipping the timed post. Manual sends still work.',
-      );
-      return record(trigger, { status: 'disabled' });
-    }
-
-    // Checked before the claim so a disconnected bot does not burn the day on a
-    // send that was never going to reach Discord.
-    if (!isDiscordConnected()) {
-      logger.error(
-        'Skipping the announcement: the Discord bot is not connected.',
-      );
-
-      return record(trigger, {
-        status: 'failed',
-        announcementDate,
-        error: 'Discord bot is not connected',
-        missingPermission: false,
-        notConnected: true,
-      });
-    }
-
-    const context = await buildContext(template.terminationDays);
+    const context = await buildContext(guild, template.terminationDays);
     const renderedBody = renderAnnouncement(template.body, context);
 
-    const mentions = await resolveMentionTargets({
+    // Resolved separately inside each server. A role ID exists in one guild
+    // only, and a handle may belong to one server and not the other — an entry
+    // that does not resolve HERE is dropped from THIS post and recorded, never
+    // a reason to withhold the message from the students who are waiting for it.
+    const mentions = await resolveMentionTargets(guild, {
       roleIds: template.mentionRoleIds,
       usernames: template.mentionUsernames,
     });
@@ -278,10 +295,11 @@ export const dispatchAttendanceAnnouncement = async ({
     // the constraint that stops an accidental one. A P2002 on that number is a
     // conflict to report, never something to retry into.
     const attempt = force
-      ? await announcementRepository.nextAttemptNumber(announcementDate)
+      ? await announcementRepository.nextAttemptNumber(guildId, announcementDate)
       : 1;
 
     const claimed = await claim({
+      guildId,
       announcementDate,
       attempt,
       trigger,
@@ -291,7 +309,7 @@ export const dispatchAttendanceAnnouncement = async ({
     });
 
     if (claimed.kind === 'error') {
-      return record(trigger, {
+      return record(guildId, trigger, {
         status: 'failed',
         announcementDate,
         error: claimed.error,
@@ -302,10 +320,10 @@ export const dispatchAttendanceAnnouncement = async ({
 
     if (claimed.kind === 'taken') {
       logger.info(
-        `Announcement for ${announcementDate} is already claimed (attempt ${claimed.attempt}); nothing posted.`,
+        `Announcement for ${announcementDate} in guild ${guildId} is already claimed (attempt ${claimed.attempt}); nothing posted.`,
       );
 
-      return record(trigger, {
+      return record(guildId, trigger, {
         status: 'already-sent',
         announcementDate,
         attempt: claimed.attempt,
@@ -313,7 +331,7 @@ export const dispatchAttendanceAnnouncement = async ({
       });
     }
 
-    const posted = await postAttendanceAnnouncement({
+    const posted = await postAttendanceAnnouncement(guild, {
       content,
       mentions: {
         everyone: template.mentionEveryone,
@@ -324,7 +342,7 @@ export const dispatchAttendanceAnnouncement = async ({
       // delivering this one announcement carries the same value and Discord
       // can collapse them. `YYYY-MM-DD` + attempt is 12-14 characters, inside
       // the 25-character limit. See `postAttendanceAnnouncement`.
-      nonce: `${announcementDate}-${claimed.attempt}`,
+      nonce: `${guildId}-${announcementDate}-${claimed.attempt}`,
     });
 
     if (!posted.ok) {
@@ -332,7 +350,7 @@ export const dispatchAttendanceAnnouncement = async ({
       // re-take the day through `reclaimFailedDay`.
       await announcementRepository.markFailed(claimed.logId, posted.error);
 
-      return record(trigger, {
+      return record(guildId, trigger, {
         status: 'failed',
         announcementDate,
         error: posted.error,
@@ -350,10 +368,10 @@ export const dispatchAttendanceAnnouncement = async ({
     });
 
     logger.info(
-      `Announcement for ${announcementDate} posted to channel ${getAttendanceChannelId() ?? 'unknown'} (attempt ${claimed.attempt}).`,
+      `Announcement for ${announcementDate} posted to channel ${getAttendanceChannelId(guild)} in guild ${guildId} (attempt ${claimed.attempt}).`,
     );
 
-    return record(trigger, {
+    return record(guildId, trigger, {
       status: 'posted',
       announcementDate,
       attempt: claimed.attempt,
@@ -363,9 +381,12 @@ export const dispatchAttendanceAnnouncement = async ({
   } catch (error) {
     // The outer net. A cron callback has nothing to catch a throw, and an
     // unhandled rejection here would take the process down with it.
-    logger.error('Announcement dispatch failed:', describeError(error));
+    logger.error(
+      `Announcement dispatch failed for guild ${guildId}:`,
+      describeError(error),
+    );
 
-    return record(trigger, {
+    return record(guildId, trigger, {
       status: 'failed',
       announcementDate,
       error: describeError(error),
@@ -373,4 +394,108 @@ export const dispatchAttendanceAnnouncement = async ({
       notConnected: false,
     });
   }
+};
+
+
+export type TGuildDispatchOutcome = {
+  guildId: string;
+  label: string;
+  result: TDispatchResult;
+};
+
+/**
+ * Renders, claims, posts, and records the announcement in EVERY configured
+ * server (or only those named).
+ *
+ * ONE template, ONE schedule, ONE mention allowlist — fanned out. Each server
+ * takes its OWN once-per-day claim, so a failure in one neither blocks nor is
+ * hidden by a success in the other, and a retry re-posts only where it failed.
+ *
+ * Never throws. Every failure comes back as that server's `TDispatchResult`.
+ */
+export const dispatchAttendanceAnnouncement = async ({
+  trigger,
+  force = false,
+  triggeredById = null,
+  guildIds,
+}: TDispatchInput & { guildIds?: string[] }): Promise<
+  TGuildDispatchOutcome[]
+> => {
+  const announcementDate = getDhakaDate();
+
+  let template: Awaited<
+    ReturnType<typeof announcementRepository.getOrCreateTemplate>
+  >;
+
+  try {
+    template = await announcementRepository.getOrCreateTemplate();
+  } catch (error) {
+    logger.error('Could not read the announcement template:', describeError(error));
+
+    // No template means nothing to post anywhere; reported against every
+    // targeted server so the failure is visible on the status read.
+    return targetGuilds(guildIds).map((guild) => ({
+      guildId: guild.guildId,
+      label: guildLabel(guild),
+      result: record(guild.guildId, trigger, {
+        status: 'failed' as const,
+        announcementDate,
+        error: describeError(error),
+        missingPermission: false,
+        notConnected: false,
+      }),
+    }));
+  }
+
+  // A disabled schedule stops the timed post and nothing else. A manual send is
+  // an admin acting deliberately, and must still work — that is what makes
+  // `enabled: false` a pause rather than a lockout.
+  if (!template.enabled && trigger === 'SCHEDULED') {
+    logger.info(
+      'Announcement schedule is disabled; skipping the timed post. Manual sends still work.',
+    );
+
+    return targetGuilds(guildIds).map((guild) => ({
+      guildId: guild.guildId,
+      label: guildLabel(guild),
+      result: record(guild.guildId, trigger, { status: 'disabled' as const }),
+    }));
+  }
+
+  // Checked once, before any claim: a disconnected bot must not burn any
+  // server's day on a send that was never going to reach Discord.
+  if (!isDiscordConnected()) {
+    logger.error('Skipping the announcement: the Discord bot is not connected.');
+
+    return targetGuilds(guildIds).map((guild) => ({
+      guildId: guild.guildId,
+      label: guildLabel(guild),
+      result: record(guild.guildId, trigger, {
+        status: 'failed' as const,
+        announcementDate,
+        error: 'Discord bot is not connected',
+        missingPermission: false,
+        notConnected: true,
+      }),
+    }));
+  }
+
+  const outcomes: TGuildDispatchOutcome[] = [];
+
+  // Sequential, and each server contained: fan-out must not multiply the
+  // instantaneous Discord burst, and one server's refusal must not stop the
+  // next server's students from getting their message.
+  for (const guild of targetGuilds(guildIds)) {
+    outcomes.push({
+      guildId: guild.guildId,
+      label: guildLabel(guild),
+      result: await dispatchForGuild(guild, template, {
+        trigger,
+        force,
+        triggeredById,
+      }),
+    });
+  }
+
+  return outcomes;
 };

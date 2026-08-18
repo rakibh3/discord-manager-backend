@@ -3,7 +3,7 @@ import cron, { type ScheduledTask } from 'node-cron';
 import config from '@/config';
 import {
   dispatchAttendanceAnnouncement,
-  getLastAnnouncementOutcome,
+  getLastAnnouncementOutcomes,
   type TLastAnnouncementOutcome,
 } from '@/lib/announcement/announcement.dispatch';
 import { announcementRepository } from '@/repositories/announcement.repository';
@@ -146,7 +146,7 @@ export type TAnnouncementSchedulerState = {
   /** Whether a task is actually registered right now. */
   running: boolean;
   nextRunAt: Date | null;
-  lastOutcome: TLastAnnouncementOutcome | null;
+  lastOutcomeByGuild: Record<string, TLastAnnouncementOutcome>;
 };
 
 /**
@@ -160,5 +160,5 @@ export const getAnnouncementSchedulerState =
     processEnabled: config.scheduler_enabled,
     running: Boolean(announcementTask),
     nextRunAt: announcementTask?.getNextRun() ?? null,
-    lastOutcome: getLastAnnouncementOutcome(),
+    lastOutcomeByGuild: getLastAnnouncementOutcomes(),
   });

@@ -4,9 +4,9 @@ import AppError from '@/errors/AppError';
 import {
   anySucceeded,
   describeFailures,
-  toEnvelope,
   type TFanOutEnvelope,
   type TGuildOutcome,
+  toEnvelope,
 } from '@/lib/discord/fanout';
 
 /**

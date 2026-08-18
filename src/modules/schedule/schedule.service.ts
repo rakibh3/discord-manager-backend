@@ -4,7 +4,6 @@ import AppError from '@/errors/AppError';
 import {
   getDailyUpdateChannelId,
   isDailyUpdateChannelOpen,
-  setDailyUpdateChannelOpen,
 } from '@/lib/discord/channel.state';
 import {
   getConfiguredGuilds,

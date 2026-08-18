@@ -16,19 +16,36 @@ const getSyncStatus = catchAsync(async (req, res) => {
   });
 });
 
-// Trigger a full guild member re-sync
+// The configured servers, so a dashboard can build a server filter without
+// hard-coding IDs in the client.
+const listServers = catchAsync(async (req, res) => {
+  const result = discordService.listServers();
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: 'Configured Discord servers retrieved successfully',
+    data: result,
+  });
+});
+
+// Trigger a full member re-sync, for every configured server or one named one
 const triggerSync = catchAsync(async (req, res) => {
-  const result = await discordService.triggerMemberSync();
+  const result = await discordService.triggerMemberSync(req.body?.guildId);
 
   sendResponse(res, {
     success: true,
     statusCode: httpStatus.ACCEPTED,
-    message: 'Member sync started',
+    message:
+      result.accepted.length === 1
+        ? 'Member sync started'
+        : `Member sync started for ${result.accepted.length} server(s)`,
     data: result,
   });
 });
 
 export const discordController = {
   getSyncStatus,
+  listServers,
   triggerSync,
 };

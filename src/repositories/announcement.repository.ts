@@ -111,6 +111,8 @@ const updateTemplate = async ({
   });
 
 export type TClaimDayInput = {
+  /** The server this attempt posts to. The claim is per server. */
+  guildId: string;
   announcementDate: string;
   attempt: number;
   trigger: AnnouncementTrigger;
@@ -122,11 +124,16 @@ export type TClaimDayInput = {
  * Takes the day, as a `SENDING` row.
  *
  * The claim is the insert. A P2002 here means another caller already holds this
- * `(key, date, attempt)` — propagated rather than swallowed, because a cron task
- * treats it as "nothing to do" and a manual send treats it as a 409, and this
- * layer has no way to tell which one is calling.
+ * `(guild, key, date, attempt)` — propagated rather than swallowed, because a
+ * cron task treats it as "nothing to do" and a manual send treats it as a 409,
+ * and this layer has no way to tell which one is calling.
+ *
+ * Scoped per server: the question is "has THIS server been posted to today",
+ * and a global claim would let a failure in one server silently consume the
+ * other's day.
  */
 const claimDay = async ({
+  guildId,
   announcementDate,
   attempt,
   trigger,
@@ -135,6 +142,7 @@ const claimDay = async ({
 }: TClaimDayInput): Promise<AnnouncementLog> =>
   prisma.announcementLog.create({
     data: {
+      guildId,
       key: ATTENDANCE_ANNOUNCEMENT_KEY,
       announcementDate,
       attempt,
@@ -146,6 +154,7 @@ const claimDay = async ({
   });
 
 export type TReclaimFailedDayInput = {
+  guildId: string;
   announcementDate: string;
   attempt: number;
   trigger: AnnouncementTrigger;
@@ -164,6 +173,7 @@ export type TReclaimFailedDayInput = {
  * back off rather than post a second message.
  */
 const reclaimFailedDay = async ({
+  guildId,
   announcementDate,
   attempt,
   trigger,
@@ -172,6 +182,7 @@ const reclaimFailedDay = async ({
 }: TReclaimFailedDayInput): Promise<number> => {
   const result = await prisma.announcementLog.updateMany({
     where: {
+      guildId,
       key: ATTENDANCE_ANNOUNCEMENT_KEY,
       announcementDate,
       attempt,
@@ -218,20 +229,27 @@ const markFailed = async (
 /** Every attempt recorded for a Dhaka date, newest attempt first. */
 const findLogsForDate = async (
   announcementDate: string,
+  guildId?: string,
 ): Promise<AnnouncementLog[]> =>
   prisma.announcementLog.findMany({
-    where: { key: ATTENDANCE_ANNOUNCEMENT_KEY, announcementDate },
-    orderBy: { attempt: 'desc' },
+    where: {
+      key: ATTENDANCE_ANNOUNCEMENT_KEY,
+      announcementDate,
+      ...(guildId ? { guildId } : {}),
+    },
+    orderBy: [{ guildId: 'asc' }, { attempt: 'desc' }],
   });
 
 /** The single row holding a given attempt, or `null`. */
 const findAttempt = async (
+  guildId: string,
   announcementDate: string,
   attempt: number,
 ): Promise<AnnouncementLog | null> =>
   prisma.announcementLog.findUnique({
     where: {
-      key_announcementDate_attempt: {
+      guildId_key_announcementDate_attempt: {
+        guildId,
         key: ATTENDANCE_ANNOUNCEMENT_KEY,
         announcementDate,
         attempt,
@@ -246,9 +264,12 @@ const findAttempt = async (
  * it, and the unique constraint turns the loser into a reported conflict rather
  * than a duplicate message.
  */
-const nextAttemptNumber = async (announcementDate: string): Promise<number> => {
+const nextAttemptNumber = async (
+  guildId: string,
+  announcementDate: string,
+): Promise<number> => {
   const latest = await prisma.announcementLog.findFirst({
-    where: { key: ATTENDANCE_ANNOUNCEMENT_KEY, announcementDate },
+    where: { guildId, key: ATTENDANCE_ANNOUNCEMENT_KEY, announcementDate },
     orderBy: { attempt: 'desc' },
     select: { attempt: true },
   });
@@ -257,9 +278,14 @@ const nextAttemptNumber = async (announcementDate: string): Promise<number> => {
 };
 
 /** The most recent attempt on any day, for the status payload. */
-const findLastLog = async (): Promise<AnnouncementLog | null> =>
+const findLastLog = async (
+  guildId?: string,
+): Promise<AnnouncementLog | null> =>
   prisma.announcementLog.findFirst({
-    where: { key: ATTENDANCE_ANNOUNCEMENT_KEY },
+    where: {
+      key: ATTENDANCE_ANNOUNCEMENT_KEY,
+      ...(guildId ? { guildId } : {}),
+    },
     orderBy: { createdAt: 'desc' },
   });
 
