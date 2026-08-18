@@ -677,10 +677,7 @@ export type AttendanceWindowPayload = {
 
 // ── Daily Status ──────────────────────────────────────────────────────────
 export type DailyStatus =
-  | 'COMPLETE'
-  | 'MISSING_UPDATE'
-  | 'MISSING_ATTENDANCE'
-  | 'MISSING_BOTH';
+  'COMPLETE' | 'MISSING_UPDATE' | 'MISSING_ATTENDANCE' | 'MISSING_BOTH';
 
 export type DailyStatusCounts = {
   date: string;
@@ -1702,20 +1699,20 @@ Returns the current attendance submission window projection.
   "statusCode": 200,
   "message": "Attendance window retrieved successfully",
   "data": {
-    "isOpen": true,                               // whether the window is open right now
-    "date": "2026-08-18",                         // today's Asia/Dhaka civil date
-    "openTime": "18:00",                          // HH:mm, Asia/Dhaka
-    "closeTime": "23:59",                         // HH:mm, Asia/Dhaka
-    "daysOfWeek": [0, 1, 2, 3, 4, 5, 6],          // 0=Sunday..6=Saturday
-    "enabled": true,                              // false = paused (window never opens)
-    "timezone": "Asia/Dhaka",                     // reported timezone constant
-    "nextOpenAt": "2026-08-19T12:00:00.000Z",     // next future opening instant (null when enabled: false)
-    "closesAt": "2026-08-18T17:59:00.000Z"        // closing instant for currently open window (null when isOpen: false)
-  }
+    "isOpen": true, // whether the window is open right now
+    "date": "2026-08-18", // today's Asia/Dhaka civil date
+    "openTime": "18:00", // HH:mm, Asia/Dhaka
+    "closeTime": "23:59", // HH:mm, Asia/Dhaka
+    "daysOfWeek": [0, 1, 2, 3, 4, 5, 6], // 0=Sunday..6=Saturday
+    "enabled": true, // false = paused (window never opens)
+    "timezone": "Asia/Dhaka", // reported timezone constant
+    "nextOpenAt": "2026-08-19T12:00:00.000Z", // next future opening instant (null when enabled: false)
+    "closesAt": "2026-08-18T17:59:00.000Z", // closing instant for currently open window (null when isOpen: false)
+  },
 }
 ```
 
-- **`nextOpenAt`** is reported even while the window is currently open (naming the *next* occurrence). It is `null` only when `enabled` is `false`.
+- **`nextOpenAt`** is reported even while the window is currently open (naming the _next_ occurrence). It is `null` only when `enabled` is `false`.
 - **`closesAt`** is populated only when `isOpen` is `true`; otherwise it is `null`.
 - The response carries **no admin-shaped fields**: no `updatedBy`, no `scheduler`, no `lastRun`, and no Discord channel or guild ID.
 
@@ -1973,8 +1970,8 @@ Summary overview figures for a given Asia/Dhaka civil date.
     "bothComplete": 2800,
     "missingUpdateOnly": 1520,
     "missingAttendanceOnly": 200,
-    "missingBoth": 667
-  }
+    "missingBoth": 667,
+  },
 }
 ```
 
@@ -1986,13 +1983,13 @@ Summary overview figures for a given Asia/Dhaka civil date.
 
 Paginated list of active guild members and their attendance/daily update status for a given date.
 
-| Query    | Type   | Rules                                                                                  |
-| -------- | ------ | -------------------------------------------------------------------------------------- |
-| `date`   | string | **required**, `YYYY-MM-DD`, valid calendar date                                        |
-| `page`   | number | optional, integer ≥ 1, default `1`                                                     |
-| `limit`  | number | optional, integer 1–200, default `50`                                                  |
-| `status` | enum   | optional: `COMPLETE` \| `MISSING_UPDATE` \| `MISSING_ATTENDANCE` \| `MISSING_BOTH`     |
-| `search` | string | optional, case-insensitive partial search on name, phone, email, or `discordUsername`  |
+| Query    | Type   | Rules                                                                                 |
+| -------- | ------ | ------------------------------------------------------------------------------------- |
+| `date`   | string | **required**, `YYYY-MM-DD`, valid calendar date                                       |
+| `page`   | number | optional, integer ≥ 1, default `1`                                                    |
+| `limit`  | number | optional, integer 1–200, default `50`                                                 |
+| `status` | enum   | optional: `COMPLETE` \| `MISSING_UPDATE` \| `MISSING_ATTENDANCE` \| `MISSING_BOTH`    |
+| `search` | string | optional, case-insensitive partial search on name, phone, email, or `discordUsername` |
 
 `status` and `search` combine (AND), applied before pagination.
 
@@ -2006,7 +2003,7 @@ Paginated list of active guild members and their attendance/daily update status 
   "meta": {
     "page": 1,
     "limit": 50,
-    "total": 1520
+    "total": 1520,
   },
   "data": [
     {
@@ -2020,9 +2017,9 @@ Paginated list of active guild members and their attendance/daily update status 
       "hasAttendance": true,
       "hasDailyUpdate": false,
       "status": "MISSING_UPDATE",
-      "attendanceSubmittedAt": "2026-08-18T14:22:31.000Z"
-    }
-  ]
+      "attendanceSubmittedAt": "2026-08-18T14:22:31.000Z",
+    },
+  ],
 }
 ```
 
@@ -2060,10 +2057,10 @@ Detailed status for a specific member on a given date, including their posted `#
       {
         "id": "cmupdate123",
         "content": "Today I implemented the public window endpoint.",
-        "postedAt": "2026-08-18T18:40:12.000Z"
-      }
-    ]
-  }
+        "postedAt": "2026-08-18T18:40:12.000Z",
+      },
+    ],
+  },
 }
 ```
 

@@ -11,6 +11,10 @@ const logger = createLogger('MemberSync');
  * Nickname / avatar / role change. Only presentation fields are updated -
  * the normalized username is owned by `userUpdate`, since a server nickname
  * is not the account handle.
+ *
+ * Scoped to the guild the event came from: a nickname is per-server, so the
+ * same account can legitimately carry a different display name in each, and an
+ * unscoped write would overwrite one server's nickname with another's.
  */
 export const handleGuildMemberUpdate = async (
   _oldMember: GuildMember | PartialGuildMember,
@@ -22,7 +26,7 @@ export const handleGuildMemberUpdate = async (
     const payload = mapGuildMemberToPayload(newMember);
 
     const result = await prisma.discordMember.updateMany({
-      where: { discordUserId: payload.discordUserId },
+      where: { guildId: payload.guildId, discordUserId: payload.discordUserId },
       data: {
         displayName: payload.displayName,
         globalName: payload.globalName,
@@ -35,7 +39,7 @@ export const handleGuildMemberUpdate = async (
     if (result.count === 0) {
       await upsertMemberPayload(payload);
       logger.info(
-        `Created record from update event: ${payload.discordUsername} (${payload.discordUserId})`,
+        `Created record from update event in guild ${payload.guildId}: ${payload.discordUsername} (${payload.discordUserId})`,
       );
     }
   } catch (error) {

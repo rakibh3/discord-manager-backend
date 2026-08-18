@@ -145,10 +145,7 @@ const getDhakaOffsetMinutes = (instant: Date): number => {
  *
  * Independent of the server's own `TZ`.
  */
-export const dhakaWallClockToInstant = (
-  date: string,
-  time: string,
-): Date => {
+export const dhakaWallClockToInstant = (date: string, time: string): Date => {
   const year = Number(date.slice(0, 4));
   const month = Number(date.slice(5, 7));
   const day = Number(date.slice(8, 10));

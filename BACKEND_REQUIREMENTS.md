@@ -4,12 +4,12 @@ Companion to `API_INTEGRATION.md`, which documents the backend as it exists. Thi
 
 Verified against the running backend at `http://localhost:8000` and the source at `discord-manager/backend/src` on 2026-08-17.
 
-| # | Item | Status | Size |
-| --- | --- | --- | --- |
-| 1 | `daily-status` module has no HTTP layer — **the whole feature is blocked** | Done (delivered by `2026-08-17-daily-status-http-layer`) | One module, ~4 files |
-| 2 | No public route exposes the attendance window — the form cannot close itself | Done (delivered by `add-public-attendance-window`) | One route, one projection |
-| 3 | Names are English-only — tighten validation to match | Done (delivered by `2026-08-17-daily-status-http-layer`) | One character class |
-| 4 | Dead `DAILY_STATUS_ENABLED` line in backend `.env` | Done (delivered by `2026-08-17-daily-status-http-layer`) | One line deleted |
+| #   | Item                                                                         | Status                                                   | Size                      |
+| --- | ---------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------- |
+| 1   | `daily-status` module has no HTTP layer — **the whole feature is blocked**   | Done (delivered by `2026-08-17-daily-status-http-layer`) | One module, ~4 files      |
+| 2   | No public route exposes the attendance window — the form cannot close itself | Done (delivered by `add-public-attendance-window`)       | One route, one projection |
+| 3   | Names are English-only — tighten validation to match                         | Done (delivered by `2026-08-17-daily-status-http-layer`) | One character class       |
+| 4   | Dead `DAILY_STATUS_ENABLED` line in backend `.env`                           | Done (delivered by `2026-08-17-daily-status-http-layer`) | One line deleted          |
 
 ---
 
@@ -21,8 +21,8 @@ Verified against the running backend at `http://localhost:8000` and the source a
 
 ```ts
 export const dailyStatusRepository = {
-  getDailyStatusPage,      // ({ date, status, search, page, limit, … }) => { rows, total }
-  getDailyStatusCounts,    // (date, { includeDeparted? })            => DailyStatusCounts
+  getDailyStatusPage, // ({ date, status, search, page, limit, … }) => { rows, total }
+  getDailyStatusCounts, // (date, { includeDeparted? })            => DailyStatusCounts
   listMembersMissingUpdate,
 };
 ```
@@ -65,10 +65,10 @@ The only places the frontend contract differs from the repository's internal sha
 
 **(b) Two field renames.** The frontend is already built against these names:
 
-| Repository field | API field |
-| --- | --- |
-| `bothCompleted` | `bothComplete` |
-| `submittedAt` | `attendanceSubmittedAt` |
+| Repository field | API field               |
+| ---------------- | ----------------------- |
+| `bothCompleted`  | `bothComplete`          |
+| `submittedAt`    | `attendanceSubmittedAt` |
 
 > Emitting the repository's own names instead is fine — say so and the frontend changes two lines. What must not happen is the two drifting apart silently, since a missing field renders as an empty cell rather than an error.
 
@@ -82,18 +82,19 @@ The seven overview figures. Straight passthrough of `getDailyStatusCounts(date)`
 
 ```jsonc
 {
-  "success": true, "statusCode": 200,
+  "success": true,
+  "statusCode": 200,
   "message": "Daily status counts retrieved successfully",
   "data": {
-    "date": "2026-08-17",          // echo the requested date back
+    "date": "2026-08-17", // echo the requested date back
     "totalMembers": 5187,
     "attendanceSubmitted": 4320,
     "dailyUpdateSubmitted": 3000,
     "bothComplete": 2800,
     "missingUpdateOnly": 1520,
     "missingAttendanceOnly": 200,
-    "missingBoth": 667
-  }
+    "missingBoth": 667,
+  },
 }
 ```
 
@@ -107,19 +108,20 @@ The four status buckets must sum to `totalMembers` — the frontend renders each
 
 The member table. Wraps `getDailyStatusPage`.
 
-| Param | Type | Rules |
-| --- | --- | --- |
-| `date` | string | **required**, `YYYY-MM-DD` |
-| `page` | number | optional, integer ≥ 1, default 1 |
-| `limit` | number | optional, integer 1–200, default 50 (frontend sends 50) |
-| `status` | enum | optional — `COMPLETE` \| `MISSING_UPDATE` \| `MISSING_ATTENDANCE` \| `MISSING_BOTH` |
+| Param    | Type   | Rules                                                                               |
+| -------- | ------ | ----------------------------------------------------------------------------------- |
+| `date`   | string | **required**, `YYYY-MM-DD`                                                          |
+| `page`   | number | optional, integer ≥ 1, default 1                                                    |
+| `limit`  | number | optional, integer 1–200, default 50 (frontend sends 50)                             |
+| `status` | enum   | optional — `COMPLETE` \| `MISSING_UPDATE` \| `MISSING_ATTENDANCE` \| `MISSING_BOTH` |
 | `search` | string | optional — case-insensitive partial match on name, phone, email or Discord username |
 
 `status` and `search` **combine** (AND), and both apply before paging.
 
 ```jsonc
 {
-  "success": true, "statusCode": 200,
+  "success": true,
+  "statusCode": 200,
   "message": "Daily status retrieved successfully",
   "meta": { "page": 1, "limit": 50, "total": 1520 },
   "data": [
@@ -127,16 +129,16 @@ The member table. Wraps `getDailyStatusPage`.
       "memberId": "…",
       "discordUserId": "…",
       "discordUsername": "rakib_dev",
-      "displayName": "Rakib",                 // may be null
-      "name": "Rakibul Hasan",                // from the attendance form, may be null
-      "email": "rakib@example.com",           // may be null
-      "phone": "01711000000",                 // may be null
+      "displayName": "Rakib", // may be null
+      "name": "Rakibul Hasan", // from the attendance form, may be null
+      "email": "rakib@example.com", // may be null
+      "phone": "01711000000", // may be null
       "hasAttendance": true,
       "hasDailyUpdate": false,
       "status": "MISSING_UPDATE",
-      "attendanceSubmittedAt": "2026-08-17T14:22:31.000Z"  // ISO, null when absent
-    }
-  ]
+      "attendanceSubmittedAt": "2026-08-17T14:22:31.000Z", // ISO, null when absent
+    },
+  ],
 }
 ```
 
@@ -152,19 +154,24 @@ One member's status plus that day's messages.
 
 **Recommended:** add `getDailyStatusForMember(memberId, date)` to `dailyStatus.repository.ts` rather than composing the status in the service — same reason as above, one definition of the status rule.
 
-Messages come from the existing `dailyUpdateRepository.listUpdatesByMemberAndDate(memberId, date)`, mapped `id → id`, `message → content`, `messageCreatedAt → postedAt` (ISO string). Use `messageCreatedAt`, the instant the message was *sent* — a message sent 23:58 and persisted 00:01 belongs to the day it was sent.
+Messages come from the existing `dailyUpdateRepository.listUpdatesByMemberAndDate(memberId, date)`, mapped `id → id`, `message → content`, `messageCreatedAt → postedAt` (ISO string). Use `messageCreatedAt`, the instant the message was _sent_ — a message sent 23:58 and persisted 00:01 belongs to the day it was sent.
 
 ```jsonc
 {
-  "success": true, "statusCode": 200,
+  "success": true,
+  "statusCode": 200,
   "message": "Member daily status retrieved successfully",
   "data": {
     // …every field from the row shape in §1.5…
     "status": "COMPLETE",
     "messages": [
-      { "id": "…", "content": "Today I finished…", "postedAt": "2026-08-17T18:40:12.000Z" }
-    ]
-  }
+      {
+        "id": "…",
+        "content": "Today I finished…",
+        "postedAt": "2026-08-17T18:40:12.000Z",
+      },
+    ],
+  },
 }
 ```
 
@@ -178,7 +185,7 @@ The filtered export — the only endpoint with no repository function behind it.
 
 Same `date`, `status` and `search` as §1.5, plus `format` (`csv` — what the frontend requests — or `xlsx`). It must honour the **active filter**: an admin exporting "missing both, searching 'rahman'" expects exactly those rows.
 
-Returns a file, *not* the JSON envelope:
+Returns a file, _not_ the JSON envelope:
 
 ```
 Content-Type: text/csv; charset=utf-8
@@ -239,16 +246,16 @@ No parameters. Always 200 — this is a question with a routine answer, not an o
   "statusCode": 200,
   "message": "Attendance window retrieved successfully",
   "data": {
-    "isOpen": true,               // right now, per the schedule
-    "date": "2026-08-18",         // today's Dhaka civil date
-    "openTime": "18:00",          // HH:mm, Asia/Dhaka
+    "isOpen": true, // right now, per the schedule
+    "date": "2026-08-18", // today's Dhaka civil date
+    "openTime": "18:00", // HH:mm, Asia/Dhaka
     "closeTime": "23:59",
     "daysOfWeek": [0, 1, 2, 3, 4, 5, 6],
-    "enabled": true,              // false = paused; the window never opens
+    "enabled": true, // false = paused; the window never opens
     "timezone": "Asia/Dhaka",
-    "nextOpenAt": "2026-08-19T12:00:00.000Z",  // null when disabled
-    "closesAt": "2026-08-18T17:59:00.000Z"     // null when not currently open
-  }
+    "nextOpenAt": "2026-08-19T12:00:00.000Z", // null when disabled
+    "closesAt": "2026-08-18T17:59:00.000Z", // null when not currently open
+  },
 }
 ```
 

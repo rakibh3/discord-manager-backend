@@ -1,5 +1,6 @@
 import { type Message, MessageType } from 'discord.js';
 
+import { getGuildConfig } from '@/lib/discord/client';
 import { ingestDailyUpdateMessage } from '@/lib/discord/message.ingest';
 import { createLogger } from '@/utils/logger';
 
@@ -24,24 +25,28 @@ const hasSubmittableContent = (message: Message): boolean =>
   message.embeds.length > 0;
 
 /**
- * Gateway entry point for `#daily-update` ingestion.
+ * Gateway entry point for `#daily-update` ingestion, across every server.
  *
  * Holds only the cheap filtering that needs the raw `Message`; everything past
  * these guards is `message.ingest.ts`. Never throws — the ingestion function
  * contains its own errors, and these filters cannot fail.
  *
- * @param dailyUpdateChannelId - from `DAILY_UPDATE_CHANNEL_ID`. Passed in
- * rather than read here so channel selection stays by ID, never by name.
+ * The server is resolved from the message itself and the channel is compared
+ * against THAT server's configured daily-update channel. Comparing against any
+ * configured daily-update channel would mean a message posted in server A's
+ * channel could be ingested as though it belonged to server B when the two IDs
+ * were swapped in configuration — and since every server names the channel
+ * identically, nothing would look wrong. Channel selection stays by ID, never
+ * by name.
  */
-export const handleMessageCreate = async (
-  message: Message,
-  dailyUpdateChannelId: string,
-  configuredGuildId: string,
-): Promise<void> => {
-  // A DM to the bot, or a message from some other guild it was added to.
-  if (!message.guildId || message.guildId !== configuredGuildId) return;
+export const handleMessageCreate = async (message: Message): Promise<void> => {
+  // A DM to the bot, or a message from some guild that is not configured.
+  if (!message.guildId) return;
 
-  if (message.channelId !== dailyUpdateChannelId) return;
+  const guild = getGuildConfig(message.guildId);
+  if (!guild) return;
+
+  if (message.channelId !== guild.channels.dailyUpdate) return;
 
   // Bots include this bot: Phase 5's channel open/close embeds post into this
   // very channel and must never be recorded as a student's update.
@@ -61,5 +66,5 @@ export const handleMessageCreate = async (
     return;
   }
 
-  await ingestDailyUpdateMessage(message);
+  await ingestDailyUpdateMessage(message, guild);
 };

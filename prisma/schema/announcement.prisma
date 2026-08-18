@@ -96,6 +96,12 @@ model AnnouncementTemplate {
 model AnnouncementLog {
   id String @id @default(uuid())
 
+  // Which server this attempt posted to. The claim below is per server, so a
+  // failure in one server neither blocks nor is hidden by a success in the
+  // other — and one server's failed day is retried without re-posting into the
+  // server that already got its message.
+  guildId String @map("guild_id")
+
   key String
 
   announcementDate String @map("announcement_date") // YYYY-MM-DD, Asia/Dhaka
@@ -134,12 +140,21 @@ model AnnouncementLog {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  // The whole once-per-day guarantee. A read-then-write check does not survive
-  // two callers arriving in the same millisecond, and here the two callers are
-  // exactly the ones that will: a process restarting at 19:00, and an admin
-  // clicking Send while cron fires. Same reasoning as
+  // The whole once-per-day guarantee, per server. A read-then-write check does
+  // not survive two callers arriving in the same millisecond, and here the two
+  // callers are exactly the ones that will: a process restarting at 19:00, and
+  // an admin clicking Send while cron fires. Same reasoning as
   // `@@unique([memberId, attendanceDate])`.
-  @@unique([key, announcementDate, attempt])
-  @@index([key, announcementDate])
+  //
+  // `guildId` leads the key deliberately: the question is "has THIS server been
+  // posted to today", and a global claim would let a failure in one server
+  // silently consume the other's day.
+  //
+  // The claim guarantees `channel.send()` is CALLED once per server per day; it
+  // cannot see the HTTP layer beneath it. `enforceNonce` covers that second
+  // window (a retried POST that Discord already processed), which is why both
+  // mechanisms exist and neither replaces the other.
+  @@unique([guildId, key, announcementDate, attempt])
+  @@index([guildId, key, announcementDate])
   @@map("announcement_logs")
 }
