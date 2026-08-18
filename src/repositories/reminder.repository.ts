@@ -1,5 +1,6 @@
 import type { ReminderLog, ReminderRecipient } from '@generated/prisma/client';
 import {
+  ReminderCriterion,
   ReminderDeliveryStatus,
   ReminderStatus,
 } from '@generated/prisma/enums';
@@ -18,8 +19,21 @@ import { prisma } from '@/lib/prisma';
  */
 
 export type CreateReminderLogInput = {
-  /** `YYYY-MM-DD`, Asia/Dhaka — the day being reminded about, usually yesterday. */
-  reminderDate: string;
+  /**
+   * The period being reminded about, inclusive at both ends, `YYYY-MM-DD` in
+   * Asia/Dhaka. A single-date broadcast passes the same date twice.
+   */
+  reminderStartDate: string;
+  reminderEndDate: string;
+  /** Which rule produced the recipient list. */
+  criterion: ReminderCriterion;
+  /** How many counted days an account had to fail to be targeted. */
+  minMissedDays: number;
+  /**
+   * Which weekdays inside the period counted, 0-is-Sunday. Empty means every
+   * day counted — see the note on the column in `reminder.prisma`.
+   */
+  daysOfWeek: number[];
   message: string;
   targetCount: number;
   /** The admin who triggered it, if known. */
@@ -275,17 +289,29 @@ const cancelReminderLog = async (
 };
 
 /**
- * An unfinished broadcast for a date, backing the one-at-a-time guard.
+ * An unfinished broadcast whose period OVERLAPS a proposed one, backing the
+ * one-at-a-time guard.
  *
  * A double-clicked button must not schedule a second 40-minute mass DM behind
- * the first.
+ * the first. Overlap rather than equality because a range and a single date can
+ * describe the same day without being the same period, and the constraint being
+ * protected — the bot's single shared DM budget — does not care which.
+ *
+ * Two periods overlap when each starts no later than the other ends. The
+ * comparison is on `YYYY-MM-DD` strings, which is a valid date comparison for
+ * the same reason the range scan is: the format sorts lexicographically.
+ *
+ * Deliberately ignores criterion, threshold and weekday set. How a target list
+ * was computed has no bearing on the budget it will spend.
  */
-const findActiveReminderForDate = async (
-  reminderDate: string,
+const findActiveReminderOverlapping = async (
+  from: string,
+  to: string,
 ): Promise<ReminderLog | null> =>
   prisma.reminderLog.findFirst({
     where: {
-      reminderDate,
+      reminderStartDate: { lte: to },
+      reminderEndDate: { gte: from },
       status: { in: [ReminderStatus.PENDING, ReminderStatus.PROCESSING] },
     },
     orderBy: { createdAt: 'desc' },
@@ -440,7 +466,7 @@ export const reminderRepository = {
   countPendingRecipients,
   finalizeReminderLog,
   cancelReminderLog,
-  findActiveReminderForDate,
+  findActiveReminderOverlapping,
   listClosedDmRecipients,
   findReminderLogById,
   findRecipient,

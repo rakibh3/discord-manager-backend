@@ -13,7 +13,7 @@ Everything below was read out of the source (`src/modules/**`, `src/middlewares/
 3. [Error envelopes (there are five, and they differ)](#3-error-envelopes-there-are-five-and-they-differ)
 4. [Authentication — the four things that will bite you](#4-authentication--the-four-things-that-will-bite-you)
 5. [Dates: everything is an Asia/Dhaka civil date](#5-dates-everything-is-an-asiadhaka-civil-date)
-5A. [Multiple Discord servers](#5a-multiple-discord-servers)
+   5A. [Multiple Discord servers](#5a-multiple-discord-servers)
 6. [Recommended Next.js architecture](#6-recommended-nextjs-architecture)
 7. [The integration layer (copy-paste starting point)](#7-the-integration-layer-copy-paste-starting-point)
 8. [Endpoint reference](#8-endpoint-reference)
@@ -295,10 +295,25 @@ The backend now serves **one or many identical Discord servers** from a single d
 `GET /api/discord/servers` 🔐 returns the configured servers. Build any server filter from this rather than hard-coding IDs.
 
 ```jsonc
-{ "success": true, "data": [
-  { "guildId": "146…", "label": "Batch A", "name": "Programming Hero B12", "reachable": true,  "unreachableReason": null },
-  { "guildId": "246…", "label": "Batch B", "name": null, "reachable": false, "unreachableReason": "The guild could not be fetched…" }
-] }
+{
+  "success": true,
+  "data": [
+    {
+      "guildId": "146…",
+      "label": "Batch A",
+      "name": "Programming Hero B12",
+      "reachable": true,
+      "unreachableReason": null,
+    },
+    {
+      "guildId": "246…",
+      "label": "Batch B",
+      "name": null,
+      "reachable": false,
+      "unreachableReason": "The guild could not be fetched…",
+    },
+  ],
+}
 ```
 
 **A single-server deployment returns one entry.** Treat one server as the normal case, not a special one: if the list has a single element, hide the filter rather than branching on a separate mode.
@@ -310,25 +325,126 @@ The backend now serves **one or many identical Discord servers** from a single d
 **The important part: partial success is `HTTP 200`, not an error.** If the channel opened in one server and failed in another, the request succeeds and the failure is inside `data`:
 
 ```jsonc
-{ "success": true, "message": "Daily update channel opened in 1 of 2 server(s)", "data": {
-  "isOpen": true,
-  "summary": { "total": 2, "succeeded": 1, "failed": 1 },
-  "servers": [
-    { "guildId": "146…", "label": "Batch A", "ok": true,  "value": { "announced": true }, "channelId": "…" },
-    { "guildId": "246…", "label": "Batch B", "ok": false, "error": "Missing Permissions", "channelId": "…" }
-  ]
-} }
+{
+  "success": true,
+  "message": "Daily update channel opened in 1 of 2 server(s)",
+  "data": {
+    "isOpen": true,
+    "summary": { "total": 2, "succeeded": 1, "failed": 1 },
+    "servers": [
+      {
+        "guildId": "146…",
+        "label": "Batch A",
+        "ok": true,
+        "value": { "announced": true },
+        "channelId": "…",
+      },
+      {
+        "guildId": "246…",
+        "label": "Batch B",
+        "ok": false,
+        "error": "Missing Permissions",
+        "channelId": "…",
+      },
+    ],
+  },
+}
 ```
 
 So **always read `data.summary.failed`** — a `success: true` does not mean every server worked. Only a total failure returns an error status. An unknown `guildId` is a `400` naming it.
 
-### Daily status gains a server dimension
+### Daily status: one row per PERSON, across every server
+
+A student in two servers is **one person with one day's work**. Posting a daily update in either server makes them COMPLETE in both, submitting attendance once covers both, and they get one reminder DM. The API reflects that: the list returns one row per Discord account, not one per server membership.
 
 - `GET /api/daily-status`, `/counts` and `/export` accept an optional **`guildId`** query parameter. Omitted means every server.
-- Every row carries `guildId`, `serverLabel`, and **`serverCount`** — how many configured servers currently hold that Discord account.
-- `serverCount > 1` means the same person appears on another server's rows too. **Do not de-duplicate them.** They owe each server its own attendance and update, so both rows are correct; show the server column (or a small badge) so the repetition reads as intended rather than as a bug.
-- `/counts` returns the seven figures **plus `byServer`**, each entry carrying the same seven figures for one server. `byServer` sums to the combined totals by construction, so a dashboard can show both without a second request.
-- The CSV export gains a leading **`server`** column, and names the server in the filename when filtered.
+- Every row carries:
+  - **`servers`** — `[{ guildId, label }]`, every server this person is in. Narrowed to the filtered server when `guildId` is supplied.
+  - **`serverCount`** — how many configured servers hold the account **in total**, never narrowed by the filter. So `servers.length === 1 && serverCount === 2` inside a filtered view means "also in another server", and is worth a small badge.
+  - **`memberId`** — the representative member record. Use it for `/members/:memberId`; it resolves to the whole person regardless of which server's record it names.
+  - **`memberIds`** — every member record behind the row, aligned with `servers`.
+- **Do not try to merge or split rows yourself.** The row is already the person.
+- `/counts` returns the seven figures **plus `byServer`**, each entry carrying the same seven figures for one server.
+
+> ⚠️ **`byServer` does NOT sum to the combined totals, and this is not a bug.** They are different units. The combined figures count **people** (someone in two servers counts once); `byServer` counts each server's **memberships** (they count once in each). The difference between the two is exactly the number of people in more than one server. Show them as two separate readings — "N students, of whom X are done today" alongside a per-server breakdown — rather than as a total and its parts.
+
+- A `byServer` entry still credits work done elsewhere: a member of server B who posted in server A counts as submitted in B's figures too.
+- `GET /api/daily-status/members/:memberId` describes the whole person. Its `messages` array merges both servers' messages for the date into one timeline ordered by send time, and each message carries **`guildId`** and **`serverLabel`** so the UI can say where it was posted.
+- The CSV export gains a leading **`servers`** column listing every server the person is in, `|`-separated, and names the server in the filename when filtered.
+- **Reminders follow the same rule**: `GET /api/reminders/targets` and `POST /api/reminders/send` skip anyone whose account posted an update in _any_ server. `targetCount` (recipient rows) can still exceed `uniqueRecipients` (people actually DMed) — that gap is the per-server audit trail, not duplicate sends.
+
+### Date ranges: filtering and reminding over a span of days
+
+Every daily-status endpoint, and both reminder endpoints, accept **either** a single `date` **or** a `from`/`to` pair. The two are mutually exclusive — sending both, or only one half of the pair, is a 400 naming the conflict. Every response states which mode produced it in a `mode` field and echoes the parameters it resolved, so you never have to infer the payload shape from the presence of a field.
+
+| Parameter          | Applies to      | Meaning                                                                                                                      |
+| ------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `date=YYYY-MM-DD`  | date mode       | One Dhaka day. Unchanged from before.                                                                                        |
+| `from=` + `to=`    | range mode      | An inclusive span of Dhaka days. Max **92 days**.                                                                            |
+| `daysOfWeek=0,1,2` | range mode only | Which weekdays inside the span count. `0` is Sunday, the same numbering the channel schedule uses. Omitted counts every day. |
+
+The span cap is a blast-radius control, not a performance limit: `from`/`to` reach an irreversible mass DM, so a mistyped year has to be a validation error rather than a broadcast. The dashboard shares the cap so any range you can preview is a range you can act on.
+
+> ⚠️ **`daysOfWeek` is an assertion, not a record.** It is the admin stating which days should count. The system does **not** store when `#daily-update` was actually open on a past day — no such history exists — so nothing verifies the claim. Every range response echoes `daysOfWeek` and the resulting `daysInRange` precisely so the figure always travels with its denominator.
+
+#### The range row: counts instead of a status
+
+In range mode a row still describes **one person**, and still carries `servers`, `serverCount`, `memberId` and `memberIds` exactly as in date mode. What changes is that the single-day `status`, `hasAttendance` and `hasDailyUpdate` are replaced by counts:
+
+| Field              | Meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `daysInRange`      | Counted days — the denominator of everything below.                     |
+| `attendanceDays`   | Days the person submitted the attendance form.                          |
+| `updateDays`       | Days they posted a daily update, in any server.                         |
+| `completeDays`     | Days they did **both**.                                                 |
+| `incompleteDays`   | `daysInRange - completeDays` — days not fully done.                     |
+| `missedBothDays`   | Days they did **neither**.                                              |
+| `missedUpdateDays` | Days with no daily update, whatever attendance says.                    |
+| `rangeStatus`      | `ALL_COMPLETE` / `PARTIAL` / `NONE`, derived from `completeDays` alone. |
+
+> ⚠️ **`incompleteDays` and `missedBothDays` are different numbers.** Someone who submits attendance every day and never posts an update has `incompleteDays = daysInRange` and `missedBothDays = 0`. The reminder threshold acts on **`missedBothDays`**, so show that column wherever an admin is about to choose a threshold. There is deliberately no field called `missedDays`.
+
+Range mode filters with `rangeStatus=` and `minMissedBothDays=` instead of `status=`; using the wrong one for the mode is a 400 rather than a filter that silently does nothing. Sorting additionally accepts `sortBy=missedBothDays|completeDays|rangeStatus`.
+
+`/counts` in range mode returns `totalMembers`, `allCompleteMembers`, `partialMembers`, `noneMembers` (which sum to `totalMembers`), plus the person-day totals `attendanceDays`, `updateDays`, `completeDays` and `missedBothDays`. These are **named differently from the seven single-date figures on purpose** — they count person-days, not people. `byServer` carries the same figures and still does not sum to the combined totals, for the same overlap reason as in date mode.
+
+`/members/:memberId` in range mode adds a `days` array — one entry per counted day with `hasAttendance`, `hasDailyUpdate` and that day's four-bucket `status` — alongside the merged message timeline for the range.
+
+#### Reminders over a range
+
+`GET /api/reminders/targets` and `POST /api/reminders/send` take the same period parameters plus two more:
+
+| Parameter       | Default          | Meaning                                                                                                  |
+| --------------- | ---------------- | -------------------------------------------------------------------------------------------------------- |
+| `criterion`     | `MISSING_UPDATE` | `MISSING_UPDATE` = no daily update that day. `MISSING_BOTH` = neither attendance nor an update that day. |
+| `minMissedDays` | `1`              | How many counted days the person must have failed to be targeted.                                        |
+
+**The default is deliberate.** `MISSING_UPDATE` with a single `date` is exactly what a broadcast meant before ranges existed, so nothing about your existing send changes. Making `MISSING_BOTH` universal would silently stop reminding a student who fills the attendance form and never posts an update — and the daily-update channel is what this feature exists to drive.
+
+Worked example — _"remind everyone who missed both submissions on at least two of the past three days"_:
+
+```http
+POST /api/reminders/send
+{
+  "from": "2026-08-15",
+  "to": "2026-08-17",
+  "criterion": "MISSING_BOTH",
+  "minMissedDays": 2,
+  "message": "..."
+}
+```
+
+Preview the exact same set first with `GET /api/reminders/targets?from=2026-08-15&to=2026-08-17&criterion=MISSING_BOTH&minMissedDays=2`, or see the same people in the dashboard list with `GET /api/daily-status?from=2026-08-15&to=2026-08-17&minMissedBothDays=2`. All three derive "behind" from one shared query, so they cannot disagree.
+
+A `minMissedDays` higher than the number of counted days is a 400 — it could never be met, and a request that always finds nobody is better refused than run.
+
+#### One broadcast at a time is now an OVERLAP check
+
+A send is refused with **409** while any unfinished broadcast covers a period sharing **any day** with the requested one. A single date inside a running range conflicts; two ranges sharing one day conflict. The refusal names the running broadcast's id and its period so you can cancel it rather than guess which date is blocked.
+
+The guard ignores `criterion`, `minMissedDays`, `daysOfWeek` and `guildIds` — the constraint it protects is the bot's single global DM budget, which does not care how a target list was computed.
+
+Every broadcast now records `reminderStartDate`, `reminderEndDate`, `criterion`, `minMissedDays` and `daysOfWeek` alongside its message. A single-date send stores the same date at both ends. **`reminderDate` no longer exists** on any reminder payload — read the period from the two date fields.
 
 ### The public attendance form
 
@@ -354,9 +470,15 @@ Top-level `alreadySubmitted` is `true` only when **every** server already has to
 `GET /api/discord/sync/status` reports `servers[]`, each with its own member counts, last sync, reachability, and — importantly — **channel verification**:
 
 ```jsonc
-{ "channels": {
-    "dailyUpdate": { "id": "333…", "verified": false,
-      "error": "daily-update channel 333… belongs to guild 246…, not 146…" } } }
+{
+  "channels": {
+    "dailyUpdate": {
+      "id": "333…",
+      "verified": false,
+      "error": "daily-update channel 333… belongs to guild 246…, not 146…",
+    },
+  },
+}
 ```
 
 That check exists because every server names its channels identically, so a swapped channel ID is invisible in configuration and in Discord. **If one server goes quiet, look here first.**

@@ -231,3 +231,282 @@ export const isValidTimeOfDay = (value: string): boolean =>
 export const timeOfDaySchema = z.string().refine(isValidTimeOfDay, {
   error: 'Time must be a 24-hour HH:mm value between 00:00 and 23:59',
 });
+
+/**
+ * The longest span any endpoint will aggregate or broadcast over, in days,
+ * counting both ends.
+ *
+ * This is NOT a query-cost limit — a ninety-day aggregation is bounded and
+ * cheap. It is a blast-radius control: `from`/`to` reach an irreversible mass
+ * DM, and a mistyped year has to come back as a validation error rather than
+ * as five thousand people being messaged. The dashboard shares the cap so that
+ * every range an admin can preview is a range they can actually act on.
+ */
+export const MAX_RANGE_DAYS = 92;
+
+/** An inclusive span of Dhaka civil dates, optionally narrowed to weekdays. */
+export type TDateRange = {
+  /** `YYYY-MM-DD`, inclusive. */
+  from: string;
+  /** `YYYY-MM-DD`, inclusive. */
+  to: string;
+  /**
+   * Which weekdays inside the span count, in cron's 0-is-Sunday numbering —
+   * the same numbering `ChannelSchedule.daysOfWeek` and `getDhakaWeekday` use,
+   * so one array feeds every consumer with no translation layer to get
+   * backwards. Omitted or empty means every day in the span counts.
+   */
+  daysOfWeek?: number[];
+};
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** The UTC midnight of a `YYYY-MM-DD` civil date, for arithmetic only. */
+const civilDateToUtcMs = (date: string): number =>
+  Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)) - 1,
+    Number(date.slice(8, 10)),
+  );
+
+/**
+ * How many calendar days an inclusive `from`..`to` span covers.
+ *
+ * Both ends are civil dates, so this is deliberately arithmetic on UTC
+ * midnights rather than on instants: no timezone is involved and none can
+ * shift the answer. `from === to` is 1, not 0.
+ *
+ * Expects two already-validated dates; a caller passing garbage gets NaN
+ * rather than a thrown error, which is why every caller runs it behind
+ * `isValidDhakaDate`.
+ */
+export const countDhakaDaysInclusive = (from: string, to: string): number =>
+  Math.round((civilDateToUtcMs(to) - civilDateToUtcMs(from)) / MS_PER_DAY) + 1;
+
+/**
+ * A single weekday number. `z.coerce` because a query string delivers `"0"`
+ * while a JSON body delivers `0`, and both are the same value.
+ */
+const weekdaySchema = z.coerce
+  .number({ error: 'Each day of week must be a number' })
+  .int({ error: 'Each day of week must be a whole number' })
+  .min(0, { error: 'Days of week run from 0 (Sunday) to 6 (Saturday)' })
+  .max(6, { error: 'Days of week run from 0 (Sunday) to 6 (Saturday)' });
+
+/**
+ * The weekday set as it arrives in a JSON body. Rejects duplicates, because a
+ * repeated day would read as if it counted twice and it does not.
+ */
+export const daysOfWeekArraySchema = z
+  .array(weekdaySchema)
+  .min(1, {
+    error:
+      'Provide at least one day of week, or omit daysOfWeek entirely to count every day in the range',
+  })
+  .refine((days) => new Set(days).size === days.length, {
+    error: 'Days of week must not repeat',
+  });
+
+/**
+ * The same set as it arrives in a query string: `daysOfWeek=0,1,2,3,4`.
+ *
+ * Split before validation so `daysOfWeek=7` reports the range rule rather than
+ * a type error about a string.
+ */
+export const daysOfWeekQuerySchema = z.preprocess(
+  (value) =>
+    typeof value === 'string'
+      ? value
+          .split(',')
+          .map((part) => part.trim())
+          .filter(Boolean)
+      : value,
+  daysOfWeekArraySchema,
+);
+
+/**
+ * The `date` XOR `from`+`to` field set, for a query string.
+ *
+ * Every field is optional here and the choice between them is enforced by
+ * `refineDateOrRange` below, because "exactly one of these two forms" is a
+ * relationship between fields and cannot be expressed on any one of them.
+ */
+export const dateOrRangeQueryShape = {
+  date: dhakaDateSchema.optional(),
+  from: dhakaDateSchema.optional(),
+  to: dhakaDateSchema.optional(),
+  daysOfWeek: daysOfWeekQuerySchema.optional(),
+};
+
+/** The same field set for a JSON body, where `daysOfWeek` is already an array. */
+export const dateOrRangeBodyShape = {
+  date: dhakaDateSchema.optional(),
+  from: dhakaDateSchema.optional(),
+  to: dhakaDateSchema.optional(),
+  daysOfWeek: daysOfWeekArraySchema.optional(),
+};
+
+type TDateOrRangeInput = {
+  date?: string;
+  from?: string;
+  to?: string;
+  daysOfWeek?: number[];
+};
+
+/**
+ * Enforces that a request states exactly one period, and that a range is a
+ * usable one.
+ *
+ * Each failure gets its own message naming the specific conflict rather than a
+ * shared "invalid period". `handleZodValidationError` title-cases every word of
+ * whatever comes out of here, so a generic message survives the journey to the
+ * client as an equally generic one — the specific text is the only part that
+ * still helps.
+ *
+ * The future-end rule is deliberately NOT here: the dashboard reads history and
+ * has no reason to refuse a future date, while a broadcast must. That check
+ * belongs to the reminder schema alone.
+ */
+export const refineDateOrRange = (
+  value: TDateOrRangeInput,
+  ctx: z.RefinementCtx,
+): void => {
+  const hasDate = value.date !== undefined;
+  const hasFrom = value.from !== undefined;
+  const hasTo = value.to !== undefined;
+
+  if (hasDate && (hasFrom || hasTo)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['date'],
+      message:
+        'Supply either a single date or a from/to range, not both — they describe different periods',
+    });
+
+    return;
+  }
+
+  if (!hasDate && !hasFrom && !hasTo) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['date'],
+      message: 'Supply either a single date or a from/to range',
+    });
+
+    return;
+  }
+
+  if (hasFrom !== hasTo) {
+    ctx.addIssue({
+      code: 'custom',
+      path: [hasFrom ? 'to' : 'from'],
+      message: 'A range needs both from and to',
+    });
+
+    return;
+  }
+
+  if (hasDate) {
+    if (value.daysOfWeek !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['daysOfWeek'],
+        message:
+          'daysOfWeek applies to a from/to range only — a single date is one day',
+      });
+    }
+
+    return;
+  }
+
+  const from = value.from as string;
+  const to = value.to as string;
+
+  // Both bounds already failed their own format check if they are not real
+  // dates, and the comparisons below are lexicographic — `'2026-08-18' <
+  // 'not-a-date'` is true, so carrying on would report "the end cannot be
+  // earlier than its start" about a value that is not a date at all. Two
+  // messages for one mistake, one of them nonsense; the same trap
+  // `reminderDateSchema` avoids with `.pipe`.
+  if (!isValidDhakaDate(from) || !isValidDhakaDate(to)) return;
+
+  if (to < from) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['to'],
+      message: 'The end of the range cannot be earlier than its start',
+    });
+
+    return;
+  }
+
+  const span = countDhakaDaysInclusive(from, to);
+
+  if (span > MAX_RANGE_DAYS) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['to'],
+      message: `A range may span at most ${MAX_RANGE_DAYS} days, but this one spans ${span}`,
+    });
+  }
+};
+
+/**
+ * The explicit list of `YYYY-MM-DD` days a range covers, after `daysOfWeek`.
+ *
+ * This is the SINGLE definition of "which days count", and it lives here
+ * because this module is already the single producer of Dhaka civil dates.
+ * The aggregation binds the resulting array straight into SQL rather than
+ * rebuilding the set there with `generate_series` + `EXTRACT(DOW …)`, which
+ * would be a second convention to keep in step with this one.
+ *
+ * The weekday is computed the same way `getDhakaWeekday` computes it — from
+ * the civil date through `Date.UTC`, so it is 0-is-Sunday and independent of
+ * the server's `TZ`. That is the same numbering Postgres's `EXTRACT(DOW …)`
+ * and cron use, so the array needs no translation anywhere it travels.
+ *
+ * Returns an empty array when `daysOfWeek` matches no day in the span. Callers
+ * MUST treat that as a rejection rather than a range: with a denominator of
+ * zero every account would roll up to fully complete by vacuous truth.
+ */
+export const rangeDays = ({ from, to, daysOfWeek }: TDateRange): string[] => {
+  const total = countDhakaDaysInclusive(from, to);
+  const wanted = daysOfWeek?.length ? new Set(daysOfWeek) : null;
+  const days: string[] = [];
+
+  for (let offset = 0; offset < total; offset += 1) {
+    const date = addDhakaDays(from, offset);
+
+    if (wanted && !wanted.has(civilDateWeekday(date))) continue;
+
+    days.push(date);
+  }
+
+  return days;
+};
+
+/** The 0-is-Sunday weekday of an already-validated `YYYY-MM-DD` civil date. */
+const civilDateWeekday = (date: string): number =>
+  new Date(civilDateToUtcMs(date)).getUTCDay();
+
+/** A validated period, in the form the services and repositories consume. */
+export type TResolvedPeriod =
+  { mode: 'date'; date: string } | ({ mode: 'range' } & TDateRange);
+
+/**
+ * Turns a validated `date` XOR `from`/`to` input into the tagged period every
+ * downstream caller branches on.
+ *
+ * Deliberately does NOT collapse a single date into a one-day range. The two
+ * produce different row shapes and answer different questions, and the tag is
+ * what keeps a caller from having to infer which it received.
+ */
+export const resolvePeriod = (input: TDateOrRangeInput): TResolvedPeriod =>
+  input.date !== undefined
+    ? { mode: 'date', date: input.date }
+    : {
+        mode: 'range',
+        from: input.from as string,
+        to: input.to as string,
+        daysOfWeek: input.daysOfWeek,
+      };

@@ -60,14 +60,14 @@
 - [x] 7.1 Change `events/messageCreate.ts` to resolve the server from `message.guild.id` and compare the channel against that server's daily-update channel only.
 - [x] 7.2 Change `message.ingest.ts` to take the resolved server and look the author up with `findMemberByDiscordUserId(guildId, discordUserId)`.
 - [x] 7.3 Scope the unknown-author repair to fetching from that server and upserting through `upsertMemberPayload` with that server's ID.
-- [x] 7.4 Verify a member of both servers who posts in one is credited only there and still shows as missing in the other.
+- [x] 7.4 Verify a member of both servers who posts in one has the message stored against that server's member record (ownership is per server; the CREDIT is account-wide — see group 15).
 - [ ] 7.5 Verify a message in server B's daily-update channel is ingested when only server A was previously configured — that is, that no residual single-channel check remains.
 
 ## 8. Repositories
 
 - [x] 8.1 Replace `findActiveMemberByUsername` with `findActiveMembersByUsername` returning one verified member per server, and update `member.repository.ts`'s doc comment about the deliberate `isInGuild` asymmetry to say it is now also per server.
 - [x] 8.2 Add `guildId` to `findMemberByDiscordUserId`, keeping it deliberately unfiltered by `isInGuild`.
-- [x] 8.3 Add `guild_id` to the `SELECT`, an optional bound `guildId` filter, and the `serverCount` correlated subquery in `dailyStatus.repository.ts`'s shared `statusSource`.
+- [x] 8.3 Add the optional bound `guildId` filter and the `serverCount` correlated subquery to `dailyStatus.repository.ts`'s shared `statusSource`, and the per-account `guildIds` / `memberIds` aggregation to its SELECT (see group 15).
 - [x] 8.4 Extend `getDailyStatusCounts` to return the existing seven figures plus a `byServer` breakdown produced in the same pass.
 - [x] 8.5 Add `guildId` to the closed `SORT_COLUMNS` allowlist; confirm the filter is a bound parameter and nothing new is interpolated.
 - [x] 8.6 Update the "Columns these queries depend on" comment at the top of `dailyStatus.repository.ts` to include `discord_members.guild_id`.
@@ -111,7 +111,7 @@
 ## 12. HTTP surface and validation
 
 - [x] 12.1 Add the optional `guildId` query parameter to the daily-status list, counts, and export validation schemas, rejecting an unconfigured value with a 400 that names it.
-- [x] 12.2 Add `guildId`, `serverLabel`, and `serverCount` to the daily-status row serialization and a `server` column to the CSV export, including the server in the export filename when filtered.
+- [x] 12.2 Add `servers`, `serverCount`, and `memberIds` to the daily-status row serialization and a `servers` column to the CSV export, including the server in the export filename when filtered.
 - [x] 12.3 Add the admin-only endpoint that lists the configured servers with their labels and reachability.
 - [x] 12.4 Extend `/api/discord/sync/status` to report per-server sync state and reachability, and `POST /sync` to accept an optional `guildId`.
 - [x] 12.5 Confirm every fan-out controller answers 200 with `summary.failed > 0` on partial success and an error status only when every server failed.
@@ -130,3 +130,18 @@
 - [ ] 14.3 Add the plural environment variables, restart, and confirm startup logs both servers and that both syncs complete with `guardTripped: false` and plausible member counts.
 - [ ] 14.4 Walk the verification sequence before an evening cycle: sync status shows two servers; the schedule read shows both channels' live state; a manual lock then open moves both channels; the announcement status shows `today.posted` per server; `verify-user` on a handle in both returns both servers.
 - [ ] 14.5 Run one reminder broadcast against a past date with a tiny target list and confirm one DM per account, both recipient rows settled, and the fallback posted in the right server.
+
+## 15. One person, one day's work
+
+A refinement raised after the fan-out was in place: a student in two servers is one
+person, so posting one daily update satisfies the day everywhere and they receive one
+DM. Membership stays per server; only what it obliges them to do changed.
+
+- [x] 15.1 Key the daily-update and attendance credit sources in `dailyStatus.repository.ts` on `discord_user_id`, joined back through `discord_members`, and leave them unfiltered by server and by `is_in_guild`.
+- [x] 15.2 Group the page, counts, and single-member queries by `discord_user_id`, aggregating `memberIds` / `guildIds` and a deterministic representative `memberId`.
+- [x] 15.3 Move the search filter from `WHERE` to `HAVING BOOL_OR(…)` so a nickname matching in one server does not drop the other server from the person's own row.
+- [x] 15.4 Keep `byServer` counting memberships from the same source, and document that it deliberately does not sum to the combined figures.
+- [x] 15.5 Key the reminder target query's `NOT EXISTS` on `discord_user_id`, so an account that posted anywhere is not targeted at all.
+- [x] 15.6 Serialize rows as one person: `servers[]`, `memberIds`, `serverCount`; make the per-member detail read resolve the whole account and merge both servers' messages into one timeline naming each message's server.
+- [x] 15.7 Verify against the live directory: one row per person, credit crossing servers for both updates and attendance, buckets summing to the account total, the server filter narrowing who is listed but not their status, and the reminder list skipping anyone who posted anywhere.
+- [ ] 15.8 With both servers live, confirm a student in both who posts once in either shows COMPLETE on the dashboard and receives no reminder.

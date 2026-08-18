@@ -71,11 +71,13 @@ Every attendance record, daily-update record, and reminder recipient record SHAL
 - **WHEN** an attendance record is stored
 - **THEN** the server it belongs to is the server of the member record that owns it
 
-#### Scenario: One person's history in two servers stays separate
+#### Scenario: One person's history in two servers stays separately owned
 
 - **WHEN** a person who is in two servers has attendance in both
-- **THEN** each server's record is distinct and reported under its own server
-- **AND** neither server's report includes the other server's record
+- **THEN** each record is distinct and owned by its own server's member record
+- **AND** neither record is rewritten or absorbed by the other server's
+
+Ownership is not the same as credit: which server a record belongs to is settled here, while whether that record satisfies the person's day everywhere is settled by "One Discord account is one person, and one person owes one day's work" below.
 
 #### Scenario: History survives a departure from one server
 
@@ -108,22 +110,80 @@ Resolving a normalized Discord handle SHALL return the set of servers in which t
 - **WHEN** an account is departed from one server and present in another
 - **THEN** only the server they are present in is returned
 
-### Requirement: Accounts present in more than one server are visible as such
+### Requirement: One Discord account is one person, and one person owes one day's work
 
-The system SHALL make it possible to see that a directory record's Discord account is also present in another configured server, without merging the records. This SHALL be reported as a property of the record rather than by de-duplicating rows.
+A Discord account SHALL be treated as a single person regardless of how many configured servers hold a record for it. Work recorded against any one of that account's member records SHALL satisfy the day for the account everywhere. The system SHALL NOT require the same person to submit the same thing once per server, and SHALL NOT report them as missing in one server on account of having done the work in another.
 
-#### Scenario: Overlap is reported on a status row
+This is a statement about obligations, not about storage: the per-server records above are unchanged, and each still owns its own membership state and its own history.
 
-- **WHEN** a member status row is returned for an account that is present in two servers
-- **THEN** the row indicates that the account is present in more than one server
+#### Scenario: A daily update posted in one server satisfies the day
 
-#### Scenario: No overlap
+- **WHEN** an account is a current member of two configured servers and posts a daily update in one of them
+- **THEN** the account is reported as having submitted a daily update, in both servers
+- **AND** it is not reported as missing an update in the server it did not post in
 
-- **WHEN** the account is present in only the server being reported
-- **THEN** the row indicates a single server
+#### Scenario: Attendance submitted before joining the second server
 
-#### Scenario: Overlap does not change the counts
+- **WHEN** an account submits the attendance form, and afterwards joins a second configured server on the same day
+- **THEN** the account is reported as having submitted attendance in the second server too
+- **AND** no second submission is required of them
 
-- **WHEN** an account is present in two servers and is counted in each server's figures
-- **THEN** each server's totals include them once, because they owe that server's daily obligations independently
-- **AND** the overlap indicator is what explains the apparent duplication rather than the counts being adjusted
+#### Scenario: A person who did nothing anywhere is still missing
+
+- **WHEN** an account is a current member of two configured servers and posts no update in either
+- **THEN** it is reported as missing an update
+
+#### Scenario: A single-server account is unaffected
+
+- **WHEN** an account belongs to exactly one configured server
+- **THEN** its status is derived exactly as it would be with one server configured
+
+#### Scenario: The credit is not narrowed by a server filter
+
+- **WHEN** a report is narrowed to one configured server and a listed account posted its update in a different server
+- **THEN** the account is still reported as having submitted
+- **AND** narrowing the view changes which people are listed, never whether a listed person has done the work
+
+#### Scenario: Departure does not withdraw credit
+
+- **WHEN** an account posts an update in one server and later leaves that server, while remaining in another
+- **THEN** the update still counts for the day
+- **AND** the record in the server they left is excluded from the report as departed records always are
+
+### Requirement: A person appears once in reports, carrying the servers they belong to
+
+A report over member status SHALL list each Discord account at most once for a given date, and SHALL name the configured servers that account belongs to on that single entry. It SHALL also report how many configured servers hold the account in total, so a report narrowed to one server can still show that the person is elsewhere as well.
+
+Per-server breakdowns SHALL remain available and SHALL count memberships rather than accounts, so each server keeps a denominator it can act on. The combined figures and the per-server breakdown therefore need not sum to one another, and the difference between them is the overlap.
+
+#### Scenario: A person in two servers is one entry
+
+- **WHEN** an account is a current member of two configured servers and no server filter is applied
+- **THEN** exactly one entry is returned for that account
+- **AND** the entry names both servers
+- **AND** the entry reports a server count of two
+
+#### Scenario: The combined total counts people
+
+- **WHEN** combined figures are produced with no server filter
+- **THEN** an account in two servers contributes one to the total
+- **AND** the status buckets still sum to the total
+
+#### Scenario: The per-server breakdown counts memberships
+
+- **WHEN** a per-server breakdown is produced alongside the combined figures
+- **THEN** an account in two servers contributes one to each server's total
+- **AND** the breakdown is not expected to sum to the combined total
+
+#### Scenario: A server filter narrows who is listed, once each
+
+- **WHEN** a report is narrowed to one configured server
+- **THEN** only accounts holding a record in that server are listed
+- **AND** each such account appears exactly once
+- **AND** the servers named on the entry are narrowed to the filtered server while the reported server count still reflects every server holding the account
+
+#### Scenario: Overlap is visible without duplication
+
+- **WHEN** an account is present in two servers
+- **THEN** the fact is reported as a property of its single entry
+- **AND** it is not conveyed by returning the account twice

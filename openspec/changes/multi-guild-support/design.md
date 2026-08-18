@@ -196,15 +196,22 @@ The **closed-DM fallback** groups `DM_CLOSED` recipients by their member row's `
 
 The drain claim (`finalizeReminderLog` as an `updateMany` scoped to `status: PROCESSING`) is unchanged and still global to the broadcast; only the fallback it triggers is now a per-server fan-out.
 
-### The dashboard gains a server dimension without a second source of truth
+### The dashboard reports PEOPLE, and credits work done in any server
 
-`dailyStatus.repository.ts` keeps its rule that every interlocking figure comes from `getDailyStatusCounts`. The changes are inside the shared `statusSource`:
+The unit of the dashboard is the Discord account, not the membership row. A student in both servers is one person with one day's work to do, so `dailyStatus.repository.ts` groups by `discord_user_id` and derives status from account-level facts:
 
-- `SELECT` adds `dm.guild_id AS "guildId"`;
-- an optional `AND dm.guild_id = ${guildId}` filter, bound as a parameter, applied identically to the page query and the counts query so they cannot disagree;
-- overlap is a correlated count, `(SELECT COUNT(*) FROM discord_members o WHERE o.discord_user_id = dm.discord_user_id AND o.is_in_guild = TRUE) AS "serverCount"` — served by the new `discord_user_id` index, and reported as `serverCount > 1` rather than as a merged row.
+- two credit sources keyed by account — everyone who submitted attendance on the date, and everyone who posted a daily update on the date — each built by joining `attendances` / `daily_updates` back to `discord_members` and keying on `discord_user_id`;
+- **neither credit source is filtered by server or by `is_in_guild`.** "Posted in any server" has to mean any server. Narrowing the credit to the server being viewed would put the double obligation straight back, and would make a `guildId` filter change a person's status rather than only which people are listed;
+- the main source keeps its `AND dm.guild_id = ${guildId}` filter, bound as a parameter and applied identically to the page and counts queries. It selects **who is listed**, never **what they are credited with**;
+- `GROUP BY dm.discord_user_id` collapses the memberships, with `ARRAY_AGG(… ORDER BY dm.guild_id)` producing `memberIds` and `guildIds` and `[1]` picking a deterministic representative `memberId` for the detail route;
+- the search filter moves from `WHERE` to `HAVING BOOL_OR(…)`. Per-server nicknames differ, and a `WHERE` would drop the non-matching membership from the person's own row — leaving `guildIds` naming one server while `serverCount` said two;
+- overlap stays a correlated count, `(SELECT COUNT(*) FROM discord_members o WHERE o.discord_user_id = dm.discord_user_id AND o.is_in_guild = TRUE) AS "serverCount"` — served by the new `discord_user_id` index, and deliberately outside the grouping so a server filter narrows `guildIds` without hiding that the person is elsewhere too.
 
-`getDailyStatusCounts` returns the existing seven figures for the selected scope **plus** `byServer: [{ guildId, label, …the same seven }]`, so combined and per-server figures are computed in one pass and cannot drift. The sort allowlist gains `guildId`; it stays a closed `Prisma.sql` map, and the filter stays a bound parameter.
+`getDailyStatusCounts` returns the seven figures for the selected scope **plus** `byServer: [{ guildId, label, …the same seven }]`, computed from the same source so they cannot drift. The two are different units on purpose: the combined figures count accounts, `byServer` counts each server's own memberships. **They do not sum**, and the gap is exactly the overlap. Both are wanted — the combined figures answer "how many students are done today", the breakdown answers "how is each server doing" with a denominator that server's admin can act on.
+
+The sort allowlist keeps `guildId`, now pointing at the aggregated `guildIds`; it stays a closed `Prisma.sql` map, and the filter stays a bound parameter.
+
+The reminder target query gets the same treatment: its `NOT EXISTS` is keyed by `discord_user_id` rather than `member_id`, so someone who posted in server A is not reminded on server B's behalf. It still returns one row per member record — that is what gives each server an auditable recipient row and lets the closed-DM fallback post in every server the person is in — and the queue's existing grouping by account still turns those rows into one DM.
 
 `SORT_COLUMNS` and the header comment listing every column the raw SQL depends on both get `guild_id` added — that comment is the only compile-time protection this file has.
 
@@ -221,7 +228,8 @@ The drain claim (`finalizeReminderLog` as an `updateMany` scoped to `status: PRO
 - **Migration backfill picks the wrong guild ID** → Every existing `discord_members` and `announcement_logs` row belongs to the one currently configured server. The migration writes that literal snowflake, taken from the deployed `.env`, and the task list requires reading it from the running environment rather than from a document. A wrong value orphans the entire directory from the running bot: the form refuses everyone and sync creates ~5,000 duplicate rows.
 - **Dropping the global `discord_username` unique loses a real protection** → It was doing two jobs: preventing duplicate rows for one person, and backing the tombstone repair. The composite unique keeps both **within** a server, which is where handle collisions actually occur. Across servers, two rows with one handle is the correct state.
 - **Fan-out doubles Discord API calls per action** → Sequential execution, unchanged per-call cost, and no new polling. The one path that must never multiply — DMs — is de-duplicated by account rather than fanned out.
-- **A person in both servers gets one DM but is counted twice in the dashboard denominator** → Correct and intended: they owe an update in each server. `serverCount > 1` on the row is what tells an admin why the numbers look the way they do.
+- **The combined totals no longer equal the sum of `byServer`** → Deliberate, and the one invariant that looks like a bug. They are different units: `totalMembers` counts people, `byServer` counts memberships. Anyone in exactly one server contributes equally to both, so the gap between them is precisely the overlap. Stated in the API docs, in the response type, and at the top of the repository, because an admin who spots it will otherwise file it.
+- **Credit is account-wide while membership is per server** → A person in two servers who posts one update is COMPLETE in both, and is not reminded at all. That is the requirement: one person, one day's work. The per-server records are unchanged and each still owns its own history — what changed is which obligations they imply, not who owns what.
 - **Partial success is easy to misread as full success** → Every fan-out response carries `summary.succeeded` / `summary.failed`, and a failed server appears with its Discord error text. Status reads (`/api/schedule/daily-update`, `/api/announcement/attendance`, `/api/discord/sync/status`, `/api/reminders/status`) all report per server, so a permission gap in one server surfaces where an operator already looks.
 - **`SCHEDULER_ENABLED` still gates cron per process, and now one tick does N servers' work** → Unchanged constraint, larger blast radius if two replicas run cron: two announcements per server rather than two total. Documented; the fix stays the same (move cron to BullMQ repeatable jobs).
 - **`node-cron` fires one task that fans out, rather than one task per server** → Deliberate: one shared schedule must produce one firing. Per-server tasks would be N cron expressions derived from one row, and a reload that destroys some but not others leaves a task firing on a schedule no row describes.

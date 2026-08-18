@@ -17,6 +17,19 @@ enum ReminderStatus {
   FAILED
 }
 
+// Which rule decided that an account owed a reminder.
+//
+// Stored on the run rather than assumed, because the two produce different
+// recipient lists from the same data and an audit that cannot say which one
+// applied cannot explain why somebody was contacted.
+enum ReminderCriterion {
+  // No daily update recorded that day, whatever attendance says. The default,
+  // and exactly what a broadcast meant before ranges existed.
+  MISSING_UPDATE
+  // Neither an attendance submission nor a daily update that day.
+  MISSING_BOTH
+}
+
 enum ReminderDeliveryStatus {
   // A recipient row exists from the moment the broadcast is queued; it only
   // reaches a terminal state when its job actually runs.
@@ -36,8 +49,35 @@ enum ReminderDeliveryStatus {
 model ReminderLog {
   id String @id @default(uuid())
 
-  reminderDate String @map("reminder_date") // YYYY-MM-DD, Asia/Dhaka
-  message      String @db.Text
+  // The period this broadcast covered, inclusive at both ends. A single-date
+  // broadcast stores the same date twice.
+  //
+  // There is deliberately no third `reminder_date` column holding "the" date:
+  // a value derivable from these two is a copy that can disagree with them,
+  // the same rule that keeps a second `guild_id` off the child tables.
+  //
+  // `String` for the reason every civil date in this domain is a string — a
+  // timezone-carrying value can be shifted by a driver onto the wrong day.
+  // They compare and range-scan correctly as strings, which is what makes the
+  // overlap check a plain pair of string comparisons.
+  reminderStartDate String @map("reminder_start_date") // YYYY-MM-DD, Asia/Dhaka
+  reminderEndDate   String @map("reminder_end_date") // YYYY-MM-DD, Asia/Dhaka
+
+  // The criteria that produced the recipient list. Recomputing "who would this
+  // have targeted" from current data gives a different answer as members join
+  // and leave, so the rule is recorded rather than inferred.
+  criterion     ReminderCriterion @default(MISSING_UPDATE)
+  minMissedDays Int               @default(1) @map("min_missed_days")
+
+  // Which weekdays inside the period counted, in cron's 0-is-Sunday numbering.
+  //
+  // EMPTY means every day in the period counted — deliberately the opposite of
+  // `ChannelSchedule.daysOfWeek`, which rejects an empty array because
+  // `enabled: false` is its pause switch. There is no second switch here, and
+  // no ambiguity: a run that counted no days could not have existed.
+  daysOfWeek Int[] @default([]) @map("days_of_week")
+
+  message String @db.Text
 
   targetCount Int            @map("target_count")
   sentCount   Int            @default(0) @map("sent_count")
@@ -55,7 +95,8 @@ model ReminderLog {
 
   recipients ReminderRecipient[]
 
-  @@index([reminderDate])
+  // The overlap guard's lookup: unfinished runs covering a proposed period.
+  @@index([reminderStartDate, reminderEndDate])
   @@map("reminder_logs")
 }
 

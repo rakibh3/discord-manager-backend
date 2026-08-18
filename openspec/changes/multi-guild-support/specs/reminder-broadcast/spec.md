@@ -2,24 +2,26 @@
 
 ### Requirement: A broadcast targets the members missing a daily update on a stated date
 
-The system SHALL target exactly the members who are currently in **any** configured server and have no daily update recorded for the requested Dhaka date in that server. One broadcast SHALL cover every configured server. The date SHALL be supplied explicitly and SHALL NOT be inferred from the current time, because a broadcast started near midnight would otherwise remind the wrong day's members with no visible sign of the mistake.
+The system SHALL target exactly the members who are currently in **any** configured server and whose Discord ACCOUNT has no daily update recorded for the requested Dhaka date in **any** configured server. One broadcast SHALL cover every configured server. The date SHALL be supplied explicitly and SHALL NOT be inferred from the current time, because a broadcast started near midnight would otherwise remind the wrong day's members with no visible sign of the mistake.
+
+Whether someone is missing SHALL be decided per account, not per member record, and SHALL match the definition the dashboard applies, so that "missing an update" cannot mean one thing on screen and another in a DM.
 
 #### Scenario: Targets resolved for a date across servers
 
 - **WHEN** a broadcast is started for a date
-- **THEN** the targets are the members of every configured server with no daily update recorded for that date in that server
+- **THEN** the targets are the members of every configured server whose account has no daily update recorded for that date anywhere
 
-#### Scenario: A person missing in both servers is targeted once per server record
+#### Scenario: A person missing everywhere is targeted once per server record
 
 - **WHEN** a Discord account is a current member of two configured servers and posted no update in either on the date
-- **THEN** a recipient record is created for each of that account's member records
+- **THEN** a recipient record is created for each of that account's member records, giving each server its own audit trail
 - **AND** the account is contacted exactly once, because delivery is grouped by Discord account
 
-#### Scenario: A person missing in one server only
+#### Scenario: A person who posted in one server is not reminded at all
 
 - **WHEN** a Discord account posted an update in one configured server and not in the other on the date
-- **THEN** only the server where they are missing produces a recipient record
-- **AND** they are contacted
+- **THEN** no recipient record is created for either server
+- **AND** they are not contacted, because they did the day's work and owe it only once
 
 #### Scenario: Departed members excluded
 
@@ -41,6 +43,12 @@ The system SHALL target exactly the members who are currently in **any** configu
 
 - **WHEN** every member of every configured server submitted an update for that date
 - **THEN** no broadcast is started and the response says the target list is empty
+
+#### Scenario: A server filter does not narrow the credit
+
+- **WHEN** a broadcast is restricted to one configured server and one of its members posted their update in a different server
+- **THEN** that member is not targeted
+- **AND** the restriction limits which servers' members may be reminded, never what counts as having submitted
 
 ### Requirement: Two broadcasts for the same date cannot run at once
 

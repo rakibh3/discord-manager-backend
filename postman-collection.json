@@ -111,12 +111,12 @@
                   "",
                   "if (jsonData.data && jsonData.data.accessToken) {",
                   "    pm.collectionVariables.set('accessToken', jsonData.data.accessToken);",
-                  "    console.log('\u2705 accessToken saved to collection variables');",
+                  "    console.log('✅ accessToken saved to collection variables');",
                   "}",
                   "",
                   "if (jsonData.data && jsonData.data.refreshToken) {",
                   "    pm.collectionVariables.set('refreshToken', jsonData.data.refreshToken);",
-                  "    console.log('\u2705 refreshToken saved to collection variables');",
+                  "    console.log('✅ refreshToken saved to collection variables');",
                   "}",
                   "",
                   "// Basic assertions",
@@ -162,7 +162,7 @@
                   "",
                   "if (jsonData.data && jsonData.data.accessToken) {",
                   "    pm.collectionVariables.set('accessToken', jsonData.data.accessToken);",
-                  "    console.log('\u2705 accessToken refreshed and saved');",
+                  "    console.log('✅ accessToken refreshed and saved');",
                   "}",
                   "",
                   "pm.test('Token refreshed', function () {",
@@ -289,7 +289,7 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/discord/sync/status",
-            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), the last sync summary, and whether #daily-update ingestion is running. `dailyUpdate.ingestionEnabled` is false when the bot fell back to a login without the Message Content Intent \u2014 member sync still works, but no daily updates are being recorded."
+            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), the last sync summary, and whether #daily-update ingestion is running. `dailyUpdate.ingestionEnabled` is false when the bot fell back to a login without the Message Content Intent — member sync still works, but no daily updates are being recorded."
           },
           "event": [
             {
@@ -310,13 +310,13 @@
                   "// The departure guard trips when a member fetch looks truncated,",
                   "// which almost always means the Server Members privileged intent is off.",
                   "if (jsonData.data && jsonData.data.lastSync && jsonData.data.lastSync.guardTripped) {",
-                  "    console.warn('\u26a0\ufe0f Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
+                  "    console.warn('⚠️ Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
                   "}",
                   "",
                   "// Ingestion off is invisible from outside except here: the dashboard would",
                   "// simply show every member as missing their daily update.",
                   "if (jsonData.data && jsonData.data.dailyUpdate && !jsonData.data.dailyUpdate.ingestionEnabled) {",
-                  "    console.warn('\u26a0\ufe0f Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
+                  "    console.warn('⚠️ Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
                   "}"
                 ]
               }
@@ -329,15 +329,10 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/discord/servers",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "discord",
-                "servers"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["discord", "servers"]
             },
-            "description": "Every configured Discord server, with its label and whether the bot currently reaches it.\n\nBuild any server filter from this rather than hard-coding IDs. A single-server deployment returns one entry \u2014 treat that as the normal case, not a special mode."
+            "description": "Every configured Discord server, with its label and whether the bot currently reaches it.\n\nBuild any server filter from this rather than hard-coding IDs. A single-server deployment returns one entry — treat that as the normal case, not a special mode."
           },
           "event": [
             {
@@ -358,13 +353,13 @@
                   "// The departure guard trips when a member fetch looks truncated,",
                   "// which almost always means the Server Members privileged intent is off.",
                   "if (jsonData.data && jsonData.data.lastSync && jsonData.data.lastSync.guardTripped) {",
-                  "    console.warn('\u26a0\ufe0f Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
+                  "    console.warn('⚠️ Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
                   "}",
                   "",
                   "// Ingestion off is invisible from outside except here: the dashboard would",
                   "// simply show every member as missing their daily update.",
                   "if (jsonData.data && jsonData.data.dailyUpdate && !jsonData.data.dailyUpdate.ingestionEnabled) {",
-                  "    console.warn('\u26a0\ufe0f Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
+                  "    console.warn('⚠️ Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
                   "}"
                 ]
               }
@@ -441,7 +436,7 @@
                   "// A scheduler that cannot edit the overwrite has no other symptom",
                   "// than a channel that never opens.",
                   "if (jsonData.data && jsonData.data.scheduler && jsonData.data.scheduler.lastRun && jsonData.data.scheduler.lastRun.error) {",
-                  "    console.warn('\u26a0\ufe0f Last scheduler run failed: ' + jsonData.data.scheduler.lastRun.error);",
+                  "    console.warn('⚠️ Last scheduler run failed: ' + jsonData.data.scheduler.lastRun.error);",
                   "}"
                 ]
               }
@@ -560,7 +555,7 @@
                 }
               }
             },
-            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
+            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           }
         },
         {
@@ -583,7 +578,7 @@
                 }
               }
             },
-            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
+            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           }
         }
       ]
@@ -951,7 +946,7 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/reminders/send",
-            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast for that date may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.\n\n**Multi-server.** Covers every configured server unless `guildIds` narrows it. One Discord account receives exactly ONE DM even when targeted through several servers \u2014 `targetCount` counts recipient rows, `uniqueRecipients` counts people. The same-date 409 stays global, because it guards the bot's single shared DM budget.",
+            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast for that date may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.\n\n**Multi-server.** Covers every configured server unless `guildIds` narrows it. One Discord account receives exactly ONE DM even when targeted through several servers — `targetCount` counts recipient rows, `uniqueRecipients` counts people. The same-date 409 stays global, because it guards the bot's single shared DM budget.",
             "header": [
               {
                 "key": "Content-Type",
@@ -1109,12 +1104,146 @@
               }
             }
           ]
+        },
+        {
+          "name": "Get Reminder Targets - Missed 2 of the Past 3 Days",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders/targets?from=2026-08-15&to=2026-08-17&criterion=MISSING_BOTH&minMissedDays=2",
+            "description": "The worked example. A three-day range with criterion MISSING_BOTH and minMissedDays 2 targets exactly the accounts that submitted NEITHER attendance NOR a daily update on at least two of the three counted days.\n\n`criterion` defaults to MISSING_UPDATE - what a broadcast meant before ranges existed - so an existing single-date send is unchanged. MISSING_BOTH is opt-in.\n\nCreates nothing and sends nothing. The same set is visible at GET /daily-status?from=...&to=...&minMissedBothDays=2, because both derive from one shared query."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Targets previewed without sending', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('targetCount');",
+                  "    pm.expect(jsonData.data.targets).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Reminder Targets - Threshold Exceeds Span (400)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reminders/targets?from=2026-08-15&to=2026-08-17&minMissedDays=5",
+            "description": "A minMissedDays higher than the number of counted days can never be met, so it is refused rather than run as a broadcast that always finds nobody."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Targets previewed without sending', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('targetCount');",
+                  "    pm.expect(jsonData.data.targets).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Reminder Broadcast - Date Range",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/reminders/send",
+            "description": "Sends to everyone who missed BOTH submissions on at least 2 of the 3 counted days.\n\nThe period, criterion, threshold and weekday set are all persisted on the run: recomputing 'who would this have targeted' from current data gives a different answer as members join and leave, so the rule is recorded rather than inferred.\n\nA single-date send stores the same date at both ends. `reminderDate` no longer exists on any reminder payload - read `reminderStartDate` and `reminderEndDate`.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from\": \"2026-08-15\",\n  \"to\": \"2026-08-17\",\n  \"criterion\": \"MISSING_BOTH\",\n  \"minMissedDays\": 2,\n  \"message\": \"You have missed both attendance and your daily update on two or more of the last three days. Please catch up today.\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Broadcast accepted, not completed', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('id');",
+                  "    pm.expect(jsonData.data.queuedJobs).to.eql(jsonData.data.targetCount);",
+                  "});",
+                  "",
+                  "// Keep the id for the progress, recipients and cancel requests.",
+                  "if (jsonData.data && jsonData.data.id) {",
+                  "    pm.collectionVariables.set('reminderId', jsonData.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Reminder Broadcast - Overlapping Period (409)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/reminders/send",
+            "description": "The one-at-a-time guard is an OVERLAP check, not date equality: any unfinished run sharing a single day with this period refuses it. A single date inside a running range conflicts; two ranges sharing one day conflict.\n\nNot escapable by naming servers or changing the criterion - the guard protects the bot's single global DM budget, which does not care how the target list was computed. The 409 names the running broadcast's id and the period it covers, so it can be cancelled rather than guessed at.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from\": \"2026-08-16\",\n  \"to\": \"2026-08-18\",\n  \"message\": \"409 while an overlapping run is pending or processing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Broadcast accepted, not completed', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('id');",
+                  "    pm.expect(jsonData.data.queuedJobs).to.eql(jsonData.data.targetCount);",
+                  "});",
+                  "",
+                  "// Keep the id for the progress, recipients and cancel requests.",
+                  "if (jsonData.data && jsonData.data.id) {",
+                  "    pm.collectionVariables.set('reminderId', jsonData.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
       "name": "Attendance Announcement",
-      "description": "The evening announcement posted to #attendance (requires ADMIN role). Nothing here is student-facing.\n\nThe message and its schedule are stored in the database, not in code or .env, and take effect without a restart. announceTime is HH:mm wall-clock in Asia/Dhaka; the cron expression is derived by the backend and never exposed.\n\n\u26a0\ufe0f MENTIONS: they come ONLY from the structured allowlist (mentionRoleIds, mentionUsernames, mentionEveryone). Mention text typed into the body is inert \u2014 allowedMentions is built from the allowlist alone, so a stray @everyone in the message cannot ping anybody. Conversely, mentionEveryone: true pings every member of the guild every evening until it is turned off.\n\nDUPLICATES: at most one post per Dhaka day, enforced by a database claim rather than by timing. A second send returns 409; { \"force\": true } is the only way past it. Beneath that, every send carries enforceNonce with a deterministic nonce, because discord.js retries a REST call that times out and Discord may already have created the message \u2014 without the nonce one logical send can leave several identical messages in the channel.\n\nOperational prerequisite: the bot needs \"Send Messages\" on the attendance channel. Without it every send fails, which is reported as a 403 on send and under `scheduler.lastOutcome` on the read.",
+      "description": "The evening announcement posted to #attendance (requires ADMIN role). Nothing here is student-facing.\n\nThe message and its schedule are stored in the database, not in code or .env, and take effect without a restart. announceTime is HH:mm wall-clock in Asia/Dhaka; the cron expression is derived by the backend and never exposed.\n\n⚠️ MENTIONS: they come ONLY from the structured allowlist (mentionRoleIds, mentionUsernames, mentionEveryone). Mention text typed into the body is inert — allowedMentions is built from the allowlist alone, so a stray @everyone in the message cannot ping anybody. Conversely, mentionEveryone: true pings every member of the guild every evening until it is turned off.\n\nDUPLICATES: at most one post per Dhaka day, enforced by a database claim rather than by timing. A second send returns 409; { \"force\": true } is the only way past it. Beneath that, every send carries enforceNonce with a deterministic nonce, because discord.js retries a REST call that times out and Discord may already have created the message — without the nonce one logical send can leave several identical messages in the channel.\n\nOperational prerequisite: the bot needs \"Send Messages\" on the attendance channel. Without it every send fails, which is reported as a 403 on send and under `scheduler.lastOutcome` on the read.",
       "item": [
         {
           "name": "Get Announcement",
@@ -1149,12 +1278,12 @@
                   "// A missing Send Messages permission has no symptom but a quiet channel.",
                   "const outcome = jsonData.data.scheduler && jsonData.data.scheduler.lastOutcome;",
                   "if (outcome && outcome.result && outcome.result.status === 'failed') {",
-                  "    console.warn('\u26a0\ufe0f Last announcement failed: ' + outcome.result.error);",
+                  "    console.warn('⚠️ Last announcement failed: ' + outcome.result.error);",
                   "}",
                   "",
-                  "// Nightly mass ping \u2014 worth seeing in the runner output.",
+                  "// Nightly mass ping — worth seeing in the runner output.",
                   "if (jsonData.data.template.mentionEveryone) {",
-                  "    console.warn('\u26a0\ufe0f mentionEveryone is ON \u2014 every post pings the whole guild');",
+                  "    console.warn('⚠️ mentionEveryone is ON — every post pings the whole guild');",
                   "}"
                 ]
               }
@@ -1221,7 +1350,7 @@
                 }
               }
             },
-            "description": "Rejected with 400 naming the unknown token and listing the supported set.\n\nThe check runs in the service rather than in Zod on purpose: handleZodValidationError Title-Cases every word of a Zod message, which would hand the admin `{{Close_time}}` \u2014 and this message exists precisely to tell them the exact string to type. Show it verbatim.\n\nLeft in the text, an unknown placeholder reaches the whole program as literal characters in the evening announcement."
+            "description": "Rejected with 400 naming the unknown token and listing the supported set.\n\nThe check runs in the service rather than in Zod on purpose: handleZodValidationError Title-Cases every word of a Zod message, which would hand the admin `{{Close_time}}` — and this message exists precisely to tell them the exact string to type. Show it verbatim.\n\nLeft in the text, an unknown placeholder reaches the whole program as literal characters in the evening announcement."
           },
           "event": [
             {
@@ -1262,7 +1391,7 @@
                 }
               }
             },
-            "description": "\u26a0\ufe0f Turns the nightly announcement into a guild-wide ping and LEAVES IT ON until something turns it off.\n\nThis flag is the only way the announcement can notify everyone. It is deliberately not expressible as an entry in mentionRoleIds, because Discord's @everyone role ID is the guild ID \u2014 an accident waiting to happen in a free-text field.\n\nThe admin who set it is recorded in template.updatedBy. Verify against the rendered mention line before sending anything."
+            "description": "⚠️ Turns the nightly announcement into a guild-wide ping and LEAVES IT ON until something turns it off.\n\nThis flag is the only way the announcement can notify everyone. It is deliberately not expressible as an entry in mentionRoleIds, because Discord's @everyone role ID is the guild ID — an accident waiting to happen in a free-text field.\n\nThe admin who set it is recorded in template.updatedBy. Verify against the rendered mention line before sending anything."
           },
           "event": [
             {
@@ -1302,7 +1431,7 @@
                 }
               }
             },
-            "description": "Empty arrays clear the allowlist \u2014 this is the \"notify nobody\" state, and the one the row is born with.\n\nContrast daysOfWeek, where an empty array is a 400: a schedule that can never fire is a mistake, while a mention list that pings nobody is a legitimate choice."
+            "description": "Empty arrays clear the allowlist — this is the \"notify nobody\" state, and the one the row is born with.\n\nContrast daysOfWeek, where an empty array is a 400: a schedule that can never fire is a mistake, while a mention list that pings nobody is a legitimate choice."
           },
           "event": [
             {
@@ -1342,7 +1471,7 @@
                 }
               }
             },
-            "description": "Rejected with 400 \u2014 a role entry must be a 17-20 digit snowflake.\n\nOnly the SHAPE is checked here. Whether the role still exists is resolved at post time, because a role can be deleted between the save and 19:00; an entry that no longer resolves is dropped from that post and recorded in unresolvedTargets rather than blocking the announcement."
+            "description": "Rejected with 400 — a role entry must be a 17-20 digit snowflake.\n\nOnly the SHAPE is checked here. Whether the role still exists is resolved at post time, because a role can be deleted between the save and 19:00; an entry that no longer resolves is dropped from that post and recorded in unresolvedTargets rather than blocking the announcement."
           },
           "event": [
             {
@@ -1461,7 +1590,7 @@
                 }
               }
             },
-            "description": "An empty body previews what is currently stored \u2014 the fastest way to see tonight's message without touching anything.\n\nNote `closeTime` in the response: it is read from the #daily-update schedule, not stored on the template, so changing the close time in Channel Schedule changes this message with nobody editing it."
+            "description": "An empty body previews what is currently stored — the fastest way to see tonight's message without touching anything.\n\nNote `closeTime` in the response: it is read from the #daily-update schedule, not stored on the template, so changing the close time in Channel Schedule changes this message with nobody editing it."
           },
           "event": [
             {
@@ -1501,7 +1630,7 @@
                 }
               }
             },
-            "description": "Requires admin auth. Posts the announcement immediately, leaving the stored schedule untouched. Works on every process, including one where SCHEDULER_ENABLED is false.\n\nRespects the once-per-day claim: if today is already posted the request is a 409 naming the earlier post, and nothing is sent. `{ \"force\": true }` posts a deliberate second message as the next attempt.\n\nA failed send does NOT consume the day - a later attempt on the same date is allowed to post.\n\n403 means the bot lacks \"Send Messages\" on the attendance channel. 503 means the bot is not connected or Discord refused the message.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
+            "description": "Requires admin auth. Posts the announcement immediately, leaving the stored schedule untouched. Works on every process, including one where SCHEDULER_ENABLED is false.\n\nRespects the once-per-day claim: if today is already posted the request is a 409 naming the earlier post, and nothing is sent. `{ \"force\": true }` posts a deliberate second message as the next attempt.\n\nA failed send does NOT consume the day - a later attempt on the same date is allowed to post.\n\n403 means the bot lacks \"Send Messages\" on the attendance channel. 503 means the bot is not connected or Discord refused the message.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
           },
           "event": [
             {
@@ -1541,7 +1670,7 @@
                 }
               }
             },
-            "description": "Run \"Send Announcement Now\" first, then this. The message names the earlier post's time and attempt number.\n\nThe refusal comes from the (key, announcement_date, attempt) unique constraint, not from a read-then-write check \u2014 a pre-check would let a process restarting at 19:00 and an admin clicking Send both through. Same reasoning as the attendance duplicate in the public folder.\n\nA FAILED attempt does NOT produce this: a failed send never consumes the day, and a plain retry is allowed to post.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
+            "description": "Run \"Send Announcement Now\" first, then this. The message names the earlier post's time and attempt number.\n\nThe refusal comes from the (key, announcement_date, attempt) unique constraint, not from a read-then-write check — a pre-check would let a process restarting at 19:00 and an admin clicking Send both through. Same reasoning as the attendance duplicate in the public folder.\n\nA FAILED attempt does NOT produce this: a failed send never consumes the day, and a plain retry is allowed to post.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
           },
           "event": [
             {
@@ -1581,7 +1710,7 @@
                 }
               }
             },
-            "description": "\u26a0\ufe0f Posts a SECOND real message today, filed as the next attempt. The only way past the once-per-day claim.\n\nUse it to recover a day stuck in SENDING (a crash between the claim and the post), or when a second announcement is genuinely intended. A losing race here hits the unique constraint and reports a conflict rather than posting twice.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
+            "description": "⚠️ Posts a SECOND real message today, filed as the next attempt. The only way past the once-per-day claim.\n\nUse it to recover a day stuck in SENDING (a crash between the claim and the post), or when a second announcement is genuinely intended. A losing race here hits the unique constraint and reports a conflict rather than posting twice.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
           },
           "event": [
             {
@@ -1613,13 +1742,8 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/counts?date={{dailyStatusDate}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "daily-status",
-                "counts"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "counts"],
               "query": [
                 {
                   "key": "date",
@@ -1634,7 +1758,7 @@
                 }
               ]
             },
-            "description": "Summary overview figures for a given date. Guaranteed JSON numbers.\n\nInvariant: `bothComplete + missingUpdateOnly + missingAttendanceOnly + missingBoth === totalMembers`."
+            "description": "Summary overview figures for a given date. Guaranteed JSON numbers.\n\nInvariant: `bothComplete + missingUpdateOnly + missingAttendanceOnly + missingBoth === totalMembers`.\n\nThe combined figures count PEOPLE - a Discord account in two configured servers counts once. `byServer` counts each server's own memberships, so the same account counts once in each.\n\nIMPORTANT: `byServer` deliberately does NOT sum to the combined totals. The difference between them is exactly the number of people who are in more than one server. Do not treat it as a total and its parts.\n\nOptional `guildId` narrows WHO is counted; it never changes anyone's status, because a daily update posted in any server credits the account everywhere."
           },
           "event": [
             {
@@ -1671,12 +1795,8 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&page=1&limit=50",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "daily-status"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
               "query": [
                 {
                   "key": "date",
@@ -1699,7 +1819,7 @@
                 }
               ]
             },
-            "description": "Paginated member status table for a date."
+            "description": "Paginated status table for a date - ONE ROW PER PERSON, not per server membership.\n\nA student in two servers appears once. Their row carries `servers` (every server they are in, narrowed by `guildId` when supplied), `serverCount` (the true total, never narrowed - so `servers.length` of 1 with `serverCount` of 2 means 'also in another server'), `memberId` (the representative record, safe to use for /members/:memberId) and `memberIds` (all of them).\n\nStatus credits work done in ANY server: an update posted in server A makes the account COMPLETE in server B too. Do not merge or split rows client-side - the row is already the person."
           },
           "event": [
             {
@@ -1732,12 +1852,8 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&status=MISSING_UPDATE&page=1&limit=50",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "daily-status"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
               "query": [
                 {
                   "key": "date",
@@ -1764,7 +1880,7 @@
                 }
               ]
             },
-            "description": "Filtered by status. Meta total reflects the filtered count."
+            "description": "Filtered by status. Meta total reflects the filtered count of PEOPLE, not memberships."
           },
           "event": [
             {
@@ -1793,12 +1909,8 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&search=rakib&page=1&limit=50",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "daily-status"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
               "query": [
                 {
                   "key": "date",
@@ -1825,7 +1937,7 @@
                 }
               ]
             },
-            "description": "Searches member directory fields case-insensitively."
+            "description": "Searches member directory fields case-insensitively.\n\nMatching is per person: a term that matches an account's nickname in only one of its servers still returns that account once, with every one of its servers intact."
           },
           "event": [
             {
@@ -1851,14 +1963,8 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/members/{{dailyStatusMemberId}}?date={{dailyStatusDate}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "daily-status",
-                "members",
-                "{{dailyStatusMemberId}}"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "members", "{{dailyStatusMemberId}}"],
               "query": [
                 {
                   "key": "date",
@@ -1866,7 +1972,7 @@
                 }
               ]
             },
-            "description": "Single member status and their posted #daily-update messages for that date. 404 if memberId is unknown."
+            "description": "One PERSON's status and their posted #daily-update messages for that date. 404 if memberId is unknown.\n\nThe memberId identifies a member record, but the response describes the whole Discord account behind it: either server's record returns the same answer. `messages` merges both servers' messages into one timeline ordered by send time, each carrying `guildId` and `serverLabel`."
           },
           "event": [
             {
@@ -1894,13 +2000,8 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/export?date={{dailyStatusDate}}&format=csv",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "daily-status",
-                "export"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "export"],
               "query": [
                 {
                   "key": "date",
@@ -1918,7 +2019,7 @@
                 }
               ]
             },
-            "description": "Streams filtered daily status rows as a CSV file attachment. Values with =, +, -, @ are escaped to prevent formula injection."
+            "description": "Streams filtered daily status rows as a CSV file attachment - one row per PERSON. Values with =, +, -, @ are escaped to prevent formula injection.\n\nThe leading `servers` column lists every server the person belongs to, pipe-separated."
           },
           "event": [
             {
@@ -1931,6 +2032,360 @@
                   "    pm.expect(pm.response.headers.get('Content-Type')).to.include('text/csv');",
                   "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment');",
                   "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Counts - Date Range",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status/counts?from=2026-08-15&to=2026-08-17&daysOfWeek=0,1,2,3,4",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "counts"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-15"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-17"
+                },
+                {
+                  "key": "daysOfWeek",
+                  "value": "0,1,2,3,4"
+                }
+              ]
+            },
+            "description": "Range-wide overview. Returns totalMembers plus the three rollup buckets (allCompleteMembers/partialMembers/noneMembers, which sum to it) and the person-day totals attendanceDays/updateDays/completeDays/missedBothDays.\n\nThe person-day totals are named DIFFERENTLY from the seven single-date figures on purpose - they count person-days, not people. `byServer` still does not sum to the combined totals; the gap is the overlap.\n\n`daysOfWeek` (0=Sunday) picks which weekdays count; omit it to count every day. The response echoes it plus the resulting `daysInRange`, so the figure always travels with its denominator."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page - Date Range",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?from=2026-08-15&to=2026-08-17&page=1&limit=50&sortBy=missedBothDays&sortDir=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-15"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-17"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "sortBy",
+                  "value": "missedBothDays"
+                },
+                {
+                  "key": "sortDir",
+                  "value": "desc"
+                }
+              ]
+            },
+            "description": "One row per PERSON, with per-day counts replacing the single-day status.\n\nWATCH OUT: `incompleteDays` and `missedBothDays` are DIFFERENT figures. Someone who submits attendance every day and never posts an update has incompleteDays = daysInRange and missedBothDays = 0. The reminder threshold acts on missedBothDays. There is deliberately no field called `missedDays`.\n\nRange-only sorts: missedBothDays, completeDays, rangeStatus."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page - Range Filtered by Rollup",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?from=2026-08-15&to=2026-08-17&rangeStatus=NONE",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-15"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-17"
+                },
+                {
+                  "key": "rangeStatus",
+                  "value": "NONE"
+                }
+              ]
+            },
+            "description": "`rangeStatus` (ALL_COMPLETE | PARTIAL | NONE) replaces `status` in range mode. Passing the single-date `status` filter with a range is a 400 rather than a filter that is accepted and silently does nothing."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page - Preview a Reminder Target Set",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?from=2026-08-15&to=2026-08-17&minMissedBothDays=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-15"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-17"
+                },
+                {
+                  "key": "minMissedBothDays",
+                  "value": "2"
+                }
+              ]
+            },
+            "description": "Filters on the SAME computed column the reminder thresholds on, so this lists exactly who a MISSING_BOTH broadcast at minMissedDays=2 would contact - in the list an admin already knows how to read, before opening the send dialog."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page - Reversed Range (400)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?from=2026-08-18&to=2026-08-16",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-18"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-16"
+                }
+              ]
+            },
+            "description": "Each range mistake is its own 400 naming the specific conflict:\n- to earlier than from (this request)\n- a span over 92 days\n- `date` together with `from`/`to`\n- a lone `from` or `to`\n- `daysOfWeek` with a single `date`\n- `daysOfWeek` leaving no counted day\n- `status` with a range, or `rangeStatus`/`minMissedBothDays` with a date"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Member Daily Status - Date Range",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status/members/{{memberId}}?from=2026-08-15&to=2026-08-17",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "members", "{{memberId}}"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-15"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-17"
+                }
+              ]
+            },
+            "description": "The account's range counts, a `days` array with one entry per counted day (hasAttendance, hasDailyUpdate and that day's four-bucket status), and the merged message timeline for the range across every server. Weekdays excluded by `daysOfWeek` are absent from `days`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Export Daily Status CSV - Date Range",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status/export?from=2026-08-15&to=2026-08-17&format=csv",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "export"],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-08-15"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-08-17"
+                },
+                {
+                  "key": "format",
+                  "value": "csv"
+                }
+              ]
+            },
+            "description": "Range export: the header row names the range count columns and rangeStatus, and the filename identifies the span. The single-date export header is unchanged."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
                 ]
               }
             }
