@@ -2,14 +2,15 @@ import type { Response } from 'express';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
+import { getConfiguredGuilds } from '@/lib/discord/client';
+import { guildLabel } from '@/lib/discord/fanout';
 import {
   type DailyStatus,
   dailyStatusRepository,
 } from '@/repositories/dailyStatus.repository';
 import { dailyUpdateRepository } from '@/repositories/dailyUpdate.repository';
 
-export type TDailyStatusCountsResult = {
-  date: string;
+export type TDailyStatusFigures = {
   totalMembers: number;
   attendanceSubmitted: number;
   dailyUpdateSubmitted: number;
@@ -19,8 +20,18 @@ export type TDailyStatusCountsResult = {
   missingBoth: number;
 };
 
+export type TDailyStatusCountsResult = TDailyStatusFigures & {
+  date: string;
+  /** The same seven figures per server, from the same query as the totals. */
+  byServer: (TDailyStatusFigures & { guildId: string; label: string })[];
+};
+
 export type TDailyStatusRowResult = {
   memberId: string;
+  guildId: string;
+  serverLabel: string;
+  /** How many configured servers currently hold this Discord account. */
+  serverCount: number;
   discordUserId: string;
   discordUsername: string;
   displayName: string | null;
@@ -43,6 +54,7 @@ export type TMemberDailyStatusResult = TDailyStatusRowResult & {
 
 export type TDailyStatusPageQuery = {
   date: string;
+  guildId?: string;
   page?: number;
   limit?: number;
   status?: DailyStatus;
@@ -51,16 +63,50 @@ export type TDailyStatusPageQuery = {
 
 export type TDailyStatusExportQuery = {
   date: string;
+  guildId?: string;
   status?: DailyStatus;
   search?: string;
   format?: 'csv' | 'xlsx';
 };
 
 /**
+ * The display name for a server ID. Config, not storage — a stored label is a
+ * second copy that goes stale the moment `.env` changes.
+ */
+const labelFor = (guildId: string): string => {
+  const config = getConfiguredGuilds().find((g) => g.guildId === guildId);
+
+  return config ? guildLabel(config) : guildId;
+};
+
+/**
+ * Refuses a server that is not configured, rather than silently returning every
+ * server. An admin who mistypes an ID must not be handed the whole directory
+ * and told it is one server's.
+ */
+export const assertConfiguredGuild = (guildId?: string): void => {
+  if (!guildId) return;
+
+  if (!getConfiguredGuilds().some((g) => g.guildId === guildId)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Unknown server: ${guildId}. Configured servers are listed at GET /api/discord/servers.`,
+    );
+  }
+};
+
+/**
  * Overview figures for a given date.
  */
-const getCounts = async (date: string): Promise<TDailyStatusCountsResult> => {
-  const counts = await dailyStatusRepository.getDailyStatusCounts(date);
+const getCounts = async (
+  date: string,
+  guildId?: string,
+): Promise<TDailyStatusCountsResult> => {
+  assertConfiguredGuild(guildId);
+
+  const counts = await dailyStatusRepository.getDailyStatusCounts(date, {
+    guildId,
+  });
 
   return {
     date,
@@ -71,6 +117,17 @@ const getCounts = async (date: string): Promise<TDailyStatusCountsResult> => {
     missingUpdateOnly: Number(counts.missingUpdateOnly),
     missingAttendanceOnly: Number(counts.missingAttendanceOnly),
     missingBoth: Number(counts.missingBoth),
+    byServer: counts.byServer.map((server) => ({
+      guildId: server.guildId,
+      label: labelFor(server.guildId),
+      totalMembers: server.totalMembers,
+      attendanceSubmitted: server.attendanceSubmitted,
+      dailyUpdateSubmitted: server.dailyUpdateSubmitted,
+      bothComplete: server.bothCompleted,
+      missingUpdateOnly: server.missingUpdateOnly,
+      missingAttendanceOnly: server.missingAttendanceOnly,
+      missingBoth: server.missingBoth,
+    })),
   };
 };
 
@@ -80,10 +137,15 @@ const getCounts = async (date: string): Promise<TDailyStatusCountsResult> => {
 const getPage = async (
   query: TDailyStatusPageQuery,
 ): Promise<{ rows: TDailyStatusRowResult[]; total: number }> => {
+  assertConfiguredGuild(query.guildId);
+
   const { rows, total } = await dailyStatusRepository.getDailyStatusPage(query);
 
   const mappedRows: TDailyStatusRowResult[] = rows.map((row) => ({
     memberId: row.memberId,
+    guildId: row.guildId,
+    serverLabel: labelFor(row.guildId),
+    serverCount: row.serverCount,
     discordUserId: row.discordUserId,
     discordUsername: row.discordUsername,
     displayName: row.displayName,
@@ -125,6 +187,9 @@ const getMemberStatus = async (
 
   return {
     memberId: memberStatus.memberId,
+    guildId: memberStatus.guildId,
+    serverLabel: labelFor(memberStatus.guildId),
+    serverCount: memberStatus.serverCount,
     discordUserId: memberStatus.discordUserId,
     discordUsername: memberStatus.discordUsername,
     displayName: memberStatus.displayName,
@@ -180,13 +245,22 @@ const exportCsv = async (
     );
   }
 
+  assertConfiguredGuild(query.guildId);
+
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  // The server is named in the filename when the export is filtered, so two
+  // downloads of the same date for different servers do not overwrite one
+  // another in a downloads folder.
+  const filenameSuffix = query.guildId
+    ? `-${labelFor(query.guildId).replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+    : '';
   res.setHeader(
     'Content-Disposition',
-    `attachment; filename="daily-status-${query.date}.csv"`,
+    `attachment; filename="daily-status-${query.date}${filenameSuffix}.csv"`,
   );
 
   const headers = [
+    'server',
     'discordUsername',
     'displayName',
     'name',
@@ -209,6 +283,7 @@ const exportCsv = async (
       date: query.date,
       status: query.status,
       search: query.search,
+      guildId: query.guildId,
       page,
       limit: batchSize,
     });
@@ -219,6 +294,7 @@ const exportCsv = async (
 
     for (const row of rows) {
       const line = [
+        escapeCsvCell(labelFor(row.guildId)),
         escapeCsvCell(row.discordUsername),
         escapeCsvCell(row.displayName),
         escapeCsvCell(row.name),

@@ -17,6 +17,19 @@ const statusSchema = z.enum(statusValues);
  */
 const countsQuerySchema = z.object({
   date: dhakaDateSchema,
+  /**
+   * Optional server filter. Omitted means every configured server.
+   *
+   * Whether the ID is actually configured is checked in the service, so the
+   * error can name the unknown server rather than reading as a format problem.
+   */
+  guildId: z
+    .string()
+    .trim()
+    .regex(/^\d{17,20}$/, {
+      error: 'guildId must be a Discord snowflake (17-20 digits)',
+    })
+    .optional(),
 });
 
 /**
@@ -24,6 +37,19 @@ const countsQuerySchema = z.object({
  */
 const pageQuerySchema = z.object({
   date: dhakaDateSchema,
+  /**
+   * Optional server filter. Omitted means every configured server.
+   *
+   * Whether the ID is actually configured is checked in the service, so the
+   * error can name the unknown server rather than reading as a format problem.
+   */
+  guildId: z
+    .string()
+    .trim()
+    .regex(/^\d{17,20}$/, {
+      error: 'guildId must be a Discord snowflake (17-20 digits)',
+    })
+    .optional(),
   page: z.coerce
     .number({ error: 'page must be a number' })
     .int({ error: 'page must be a whole number' })
@@ -51,6 +77,19 @@ const memberQuerySchema = z.object({
  */
 const exportQuerySchema = z.object({
   date: dhakaDateSchema,
+  /**
+   * Optional server filter. Omitted means every configured server.
+   *
+   * Whether the ID is actually configured is checked in the service, so the
+   * error can name the unknown server rather than reading as a format problem.
+   */
+  guildId: z
+    .string()
+    .trim()
+    .regex(/^\d{17,20}$/, {
+      error: 'guildId must be a Discord snowflake (17-20 digits)',
+    })
+    .optional(),
   status: statusSchema.optional(),
   search: z.string().trim().optional(),
   format: z.enum(['csv', 'xlsx']).default('csv'),

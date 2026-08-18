@@ -15,8 +15,8 @@ import { prisma } from '@/lib/prisma';
  * A rename in `prisma/schema/*.prisma` will NOT break `$queryRaw` at compile
  * time, so every column named below must be checked by hand after a schema
  * change:
- *   discord_members: id, discord_user_id, discord_username, display_name,
- *                    is_in_guild
+ *   discord_members: id, guild_id, discord_user_id, discord_username,
+ *                    display_name, is_in_guild
  *   attendances:     id, member_id, attendance_date, name, email, phone,
  *                    submitted_at
  *   daily_updates:   member_id, message_date
@@ -47,6 +47,17 @@ export type DailyStatus = (typeof DAILY_STATUS)[keyof typeof DAILY_STATUS];
  */
 export type DailyStatusRow = {
   memberId: string;
+  /** The configured server this member record belongs to. */
+  guildId: string;
+  /**
+   * How many configured servers currently hold this Discord account.
+   *
+   * Greater than one means the same person appears on another server's rows
+   * too. Reported rather than de-duplicated: they owe each server its own daily
+   * obligations, so both rows are correct — this is what explains the apparent
+   * duplication instead of the counts being quietly adjusted.
+   */
+  serverCount: number;
   discordUserId: string;
   discordUsername: string;
   displayName: string | null;
@@ -61,7 +72,7 @@ export type DailyStatusRow = {
   status: DailyStatus;
 };
 
-export type DailyStatusCounts = {
+export type DailyStatusFigures = {
   totalMembers: number;
   attendanceSubmitted: number;
   dailyUpdateSubmitted: number;
@@ -71,9 +82,20 @@ export type DailyStatusCounts = {
   missingBoth: number;
 };
 
+export type DailyStatusCounts = DailyStatusFigures & {
+  /**
+   * The same seven figures per configured server, produced by the SAME query
+   * as the totals so the two can never disagree. Each combined figure is the
+   * sum of that figure across this array by construction.
+   */
+  byServer: (DailyStatusFigures & { guildId: string })[];
+};
+
 export type DailyStatusQuery = {
   /** `YYYY-MM-DD`, Asia/Dhaka. */
   date: string;
+  /** Narrow to one configured server. Omitted means every server. */
+  guildId?: string;
   status?: DailyStatus;
   search?: string;
   page?: number;
@@ -94,6 +116,7 @@ export type DailyStatusSortColumn = keyof typeof SORT_COLUMNS;
 // These name the OUTPUT columns of the wrapping subquery, not the underlying
 // tables — `dm` and `a` are not in scope outside it.
 const SORT_COLUMNS = {
+  guildId: Prisma.sql`ranked."guildId"`,
   username: Prisma.sql`ranked."discordUsername"`,
   displayName: Prisma.sql`ranked."displayName"`,
   status: Prisma.sql`ranked."status"`,
@@ -117,11 +140,19 @@ const statusSource = (
   {
     includeDeparted = false,
     search,
-  }: Pick<DailyStatusQuery, 'includeDeparted' | 'search'>,
+    guildId,
+  }: Pick<DailyStatusQuery, 'includeDeparted' | 'search' | 'guildId'>,
 ) => {
-  const guildFilter = includeDeparted
+  const inGuildFilter = includeDeparted
     ? Prisma.empty
     : Prisma.sql`AND dm.is_in_guild = TRUE`;
+
+  // Bound as a parameter, never interpolated, and applied through this shared
+  // source so the page query and the counts query can never describe different
+  // sets of members.
+  const serverFilter = guildId
+    ? Prisma.sql`AND dm.guild_id = ${guildId}`
+    : Prisma.empty;
 
   // ILIKE gives the case-insensitive match the spec requires. The term is
   // bound as a parameter, so a `%` or `_` typed by a user is a literal
@@ -143,7 +174,7 @@ const statusSource = (
     LEFT JOIN (
       SELECT DISTINCT member_id FROM daily_updates WHERE message_date = ${date}
     ) du ON dm.id = du.member_id
-    WHERE TRUE ${guildFilter} ${searchFilter}
+    WHERE TRUE ${inGuildFilter} ${serverFilter} ${searchFilter}
   `;
 };
 
@@ -165,6 +196,7 @@ const statusExpression = Prisma.sql`
  */
 const getDailyStatusPage = async ({
   date,
+  guildId,
   status,
   search,
   page = 1,
@@ -173,7 +205,7 @@ const getDailyStatusPage = async ({
   sortBy = 'username',
   sortDir = 'asc',
 }: DailyStatusQuery): Promise<{ rows: DailyStatusRow[]; total: number }> => {
-  const source = statusSource(date, { includeDeparted, search });
+  const source = statusSource(date, { includeDeparted, search, guildId });
 
   // Filtering on the computed status has to happen outside the SELECT that
   // defines it, hence the wrapping subquery.
@@ -194,6 +226,15 @@ const getDailyStatusPage = async ({
       SELECT * FROM (
         SELECT
           dm.id               AS "memberId",
+          dm.guild_id         AS "guildId",
+          -- Cross-server presence, served by the discord_user_id index. A
+          -- correlated count rather than a join so it cannot change the row
+          -- count of the aggregation it is reported alongside.
+          (
+            SELECT COUNT(*)::int FROM discord_members o
+             WHERE o.discord_user_id = dm.discord_user_id
+               AND o.is_in_guild = TRUE
+          )                   AS "serverCount",
           dm.discord_user_id  AS "discordUserId",
           dm.discord_username AS "discordUsername",
           dm.display_name     AS "displayName",
@@ -233,9 +274,12 @@ const getDailyStatusPage = async ({
  */
 const getDailyStatusCounts = async (
   date: string,
-  { includeDeparted = false }: Pick<DailyStatusQuery, 'includeDeparted'> = {},
+  {
+    includeDeparted = false,
+    guildId,
+  }: Pick<DailyStatusQuery, 'includeDeparted' | 'guildId'> = {},
 ): Promise<DailyStatusCounts> => {
-  const source = statusSource(date, { includeDeparted });
+  const source = statusSource(date, { includeDeparted, guildId });
 
   const [result] = await prisma.$queryRaw<
     {
@@ -259,6 +303,35 @@ const getDailyStatusCounts = async (
     ${source}
   `;
 
+  // The same seven expressions, grouped by server. Deliberately built from the
+  // same `source`, so a filter that applies to one applies to both and the
+  // breakdown cannot describe a different set of members than the totals.
+  const perServer = await prisma.$queryRaw<
+    {
+      guildId: string;
+      totalMembers: bigint;
+      attendanceSubmitted: bigint;
+      dailyUpdateSubmitted: bigint;
+      bothCompleted: bigint;
+      missingUpdateOnly: bigint;
+      missingAttendanceOnly: bigint;
+      missingBoth: bigint;
+    }[]
+  >`
+    SELECT
+      dm.guild_id AS "guildId",
+      COUNT(*)::bigint AS "totalMembers",
+      COUNT(*) FILTER (WHERE a.id IS NOT NULL)::bigint AS "attendanceSubmitted",
+      COUNT(*) FILTER (WHERE du.member_id IS NOT NULL)::bigint AS "dailyUpdateSubmitted",
+      COUNT(*) FILTER (WHERE a.id IS NOT NULL AND du.member_id IS NOT NULL)::bigint AS "bothCompleted",
+      COUNT(*) FILTER (WHERE a.id IS NOT NULL AND du.member_id IS NULL)::bigint AS "missingUpdateOnly",
+      COUNT(*) FILTER (WHERE a.id IS NULL AND du.member_id IS NOT NULL)::bigint AS "missingAttendanceOnly",
+      COUNT(*) FILTER (WHERE a.id IS NULL AND du.member_id IS NULL)::bigint AS "missingBoth"
+    ${source}
+    GROUP BY dm.guild_id
+    ORDER BY dm.guild_id ASC
+  `;
+
   return {
     totalMembers: Number(result?.totalMembers ?? 0),
     attendanceSubmitted: Number(result?.attendanceSubmitted ?? 0),
@@ -267,10 +340,22 @@ const getDailyStatusCounts = async (
     missingUpdateOnly: Number(result?.missingUpdateOnly ?? 0),
     missingAttendanceOnly: Number(result?.missingAttendanceOnly ?? 0),
     missingBoth: Number(result?.missingBoth ?? 0),
+    byServer: perServer.map((row) => ({
+      guildId: row.guildId,
+      totalMembers: Number(row.totalMembers),
+      attendanceSubmitted: Number(row.attendanceSubmitted),
+      dailyUpdateSubmitted: Number(row.dailyUpdateSubmitted),
+      bothCompleted: Number(row.bothCompleted),
+      missingUpdateOnly: Number(row.missingUpdateOnly),
+      missingAttendanceOnly: Number(row.missingAttendanceOnly),
+      missingBoth: Number(row.missingBoth),
+    })),
   };
 };
 
 export type ReminderTarget = {
+  /** The server this member record belongs to. */
+  guildId: string;
   memberId: string;
   discordUserId: string;
   discordUsername: string;
@@ -278,29 +363,43 @@ export type ReminderTarget = {
 };
 
 /**
- * Members with no daily update on a date — Phase 6's DM target list.
+ * Member records with no daily update on a date — the DM target list.
  *
- * Always restricted to members currently in the guild: a departed member
- * cannot be reminded, and Golden Rule 1 makes `discord_user_id` the identity
- * used to DM them.
+ * Spans every configured server unless one is named. Restricted to members
+ * currently in THEIR OWN server: a departed member cannot be reminded there,
+ * and someone present in one server and departed from another is targeted only
+ * for the one they are still in.
+ *
+ * Returns one entry PER MEMBER RECORD, so an account missing an update in two
+ * servers appears twice — correct, because it owes each server its own update.
+ * Entries carry `discordUserId` so the queue can group them into ONE DM per
+ * person; see `groupTargetsByAccount`.
  */
 const listMembersMissingUpdate = async (
   date: string,
-): Promise<ReminderTarget[]> =>
-  prisma.$queryRaw<ReminderTarget[]>`
+  guildId?: string,
+): Promise<ReminderTarget[]> => {
+  const serverFilter = guildId
+    ? Prisma.sql`AND dm.guild_id = ${guildId}`
+    : Prisma.empty;
+
+  return prisma.$queryRaw<ReminderTarget[]>`
     SELECT
       dm.id               AS "memberId",
+      dm.guild_id         AS "guildId",
       dm.discord_user_id  AS "discordUserId",
       dm.discord_username AS "discordUsername",
       dm.display_name     AS "displayName"
     FROM discord_members dm
     WHERE dm.is_in_guild = TRUE
+      ${serverFilter}
       AND NOT EXISTS (
         SELECT 1 FROM daily_updates du
         WHERE du.member_id = dm.id AND du.message_date = ${date}
       )
-    ORDER BY dm.discord_username ASC
+    ORDER BY dm.guild_id ASC, dm.discord_username ASC
   `;
+};
 
 /**
  * One member's daily status for a date, using the exact same status derivation
@@ -313,6 +412,12 @@ const getDailyStatusForMember = async (
   const rows = await prisma.$queryRaw<DailyStatusRow[]>`
     SELECT
       dm.id               AS "memberId",
+      dm.guild_id         AS "guildId",
+      (
+        SELECT COUNT(*)::int FROM discord_members o
+         WHERE o.discord_user_id = dm.discord_user_id
+           AND o.is_in_guild = TRUE
+      )                   AS "serverCount",
       dm.discord_user_id  AS "discordUserId",
       dm.discord_username AS "discordUsername",
       dm.display_name     AS "displayName",

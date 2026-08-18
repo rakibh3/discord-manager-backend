@@ -36,8 +36,8 @@
 - [x] 4.4 Scope `releaseConflictingUsername` to `guildId_discordUsername`, so the same handle in another server is never treated as a collision.
 - [x] 4.5 Fix `isUsernameConflict` to detect P2002 through `JSON.stringify(error.meta ?? {}).includes('discord_username')` — `meta.target` is undefined under `@prisma/adapter-pg`, so the repair never fires today.
 - [x] 4.6 Turn the module-level sync state into a per-guild map and expose it keyed by guild; keep the concurrent-sync guard per guild.
-- [ ] 4.7 **Verify the scoping deliberately**: seed two servers, run a sync of server A, and confirm server B's active member count, `leftAt` values, and directory rows are byte-for-byte unchanged.
-- [ ] 4.8 Verify a truncated fetch in server A trips the guard for A alone and leaves B untouched.
+- [x] 4.7 **Verify the scoping deliberately**: seed two servers, run a sync of server A, and confirm server B's active member count, `leftAt` values, and directory rows are byte-for-byte unchanged.
+- [x] 4.8 Verify a truncated fetch in server A trips the guard for A alone and leaves B untouched.
 
 ## 5. Fan-out helper
 
@@ -60,20 +60,20 @@
 - [x] 7.1 Change `events/messageCreate.ts` to resolve the server from `message.guild.id` and compare the channel against that server's daily-update channel only.
 - [x] 7.2 Change `message.ingest.ts` to take the resolved server and look the author up with `findMemberByDiscordUserId(guildId, discordUserId)`.
 - [x] 7.3 Scope the unknown-author repair to fetching from that server and upserting through `upsertMemberPayload` with that server's ID.
-- [ ] 7.4 Verify a member of both servers who posts in one is credited only there and still shows as missing in the other.
+- [x] 7.4 Verify a member of both servers who posts in one is credited only there and still shows as missing in the other.
 - [ ] 7.5 Verify a message in server B's daily-update channel is ingested when only server A was previously configured — that is, that no residual single-channel check remains.
 
 ## 8. Repositories
 
 - [x] 8.1 Replace `findActiveMemberByUsername` with `findActiveMembersByUsername` returning one verified member per server, and update `member.repository.ts`'s doc comment about the deliberate `isInGuild` asymmetry to say it is now also per server.
 - [x] 8.2 Add `guildId` to `findMemberByDiscordUserId`, keeping it deliberately unfiltered by `isInGuild`.
-- [ ] 8.3 Add `guild_id` to the `SELECT`, an optional bound `guildId` filter, and the `serverCount` correlated subquery in `dailyStatus.repository.ts`'s shared `statusSource`.
-- [ ] 8.4 Extend `getDailyStatusCounts` to return the existing seven figures plus a `byServer` breakdown produced in the same pass.
-- [ ] 8.5 Add `guildId` to the closed `SORT_COLUMNS` allowlist; confirm the filter is a bound parameter and nothing new is interpolated.
-- [ ] 8.6 Update the "Columns these queries depend on" comment at the top of `dailyStatus.repository.ts` to include `discord_members.guild_id`.
-- [ ] 8.7 Extend the reminder target query to return the member's `guildId` and to span every server, or one named server.
+- [x] 8.3 Add `guild_id` to the `SELECT`, an optional bound `guildId` filter, and the `serverCount` correlated subquery in `dailyStatus.repository.ts`'s shared `statusSource`.
+- [x] 8.4 Extend `getDailyStatusCounts` to return the existing seven figures plus a `byServer` breakdown produced in the same pass.
+- [x] 8.5 Add `guildId` to the closed `SORT_COLUMNS` allowlist; confirm the filter is a bound parameter and nothing new is interpolated.
+- [x] 8.6 Update the "Columns these queries depend on" comment at the top of `dailyStatus.repository.ts` to include `discord_members.guild_id`.
+- [x] 8.7 Extend the reminder target query to return the member's `guildId` and to span every server, or one named server.
 - [x] 8.8 Add `guildId` to the announcement repository's claim, reclaim, and today-status reads.
-- [ ] 8.9 Verify the page query and the counts query return the same totals under every combination of server filter, status filter, and search.
+- [x] 8.9 Verify the page query and the counts query return the same totals under every combination of server filter, status filter, and search.
 
 ## 9. Attendance form across servers
 
@@ -83,7 +83,7 @@
 - [x] 9.4 Implement the duplicate rule: all servers already recorded → duplicate error naming the date; some recorded → write the missing ones and return success naming the servers recorded.
 - [x] 9.5 Confirm P2002 detection still matches the documented `JSON.stringify(err.meta)` contains `attendance_date` path under the driver adapter.
 - [x] 9.6 Leave `GET /api/attendance/window` untouched and confirm it still performs no Discord call.
-- [ ] 9.7 Verify a handle in both servers submits once and appears present in both; verify a handle in one server is unaffected.
+- [x] 9.7 Verify a handle in both servers submits once and appears present in both; verify a handle in one server is unaffected.
 
 ## 10. Reminder broadcast and queue
 
@@ -94,7 +94,7 @@
 - [x] 10.5 Group `DM_CLOSED` recipients by `guildId` and post each group to that server's reminder channel, keeping `allowedMentions: { parse: [], users }` and the 50-mention chunking.
 - [x] 10.6 Report `lastFallback` per server so a missing `Send Messages` in one server is visible.
 - [x] 10.7 Accept an optional `guildIds` restriction on `POST /send`, keeping the same-date 409 global.
-- [ ] 10.8 Verify a member of both servers who missed in both receives exactly one DM and has both recipient rows settled.
+- [x] 10.8 Verify a member of both servers who missed in both receives exactly one DM and has both recipient rows settled.
 - [ ] 10.9 Verify the rate limiter still paces the whole queue rather than per server.
 
 ## 11. Announcement across servers
@@ -110,8 +110,8 @@
 
 ## 12. HTTP surface and validation
 
-- [ ] 12.1 Add the optional `guildId` query parameter to the daily-status list, counts, and export validation schemas, rejecting an unconfigured value with a 400 that names it.
-- [ ] 12.2 Add `guildId`, `serverLabel`, and `serverCount` to the daily-status row serialization and a `server` column to the CSV export, including the server in the export filename when filtered.
+- [x] 12.1 Add the optional `guildId` query parameter to the daily-status list, counts, and export validation schemas, rejecting an unconfigured value with a 400 that names it.
+- [x] 12.2 Add `guildId`, `serverLabel`, and `serverCount` to the daily-status row serialization and a `server` column to the CSV export, including the server in the export filename when filtered.
 - [x] 12.3 Add the admin-only endpoint that lists the configured servers with their labels and reachability.
 - [x] 12.4 Extend `/api/discord/sync/status` to report per-server sync state and reachability, and `POST /sync` to accept an optional `guildId`.
 - [ ] 12.5 Confirm every fan-out controller answers 200 with `summary.failed > 0` on partial success and an error status only when every server failed.

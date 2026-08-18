@@ -24,7 +24,10 @@ const readMemberId = (req: Request): string => {
 
 // Overview figures for a given date
 const getCounts = catchAsync(async (req, res) => {
-  const result = await dailyStatusService.getCounts(req.query.date as string);
+  const result = await dailyStatusService.getCounts(
+    req.query.date as string,
+    req.query.guildId as string | undefined,
+  );
 
   sendResponse(res, {
     success: true,
@@ -39,6 +42,7 @@ const getPage = catchAsync(async (req, res) => {
   const paging = readPaging(req.query);
   const { rows, total } = await dailyStatusService.getPage({
     date: req.query.date as string,
+    guildId: req.query.guildId as string | undefined,
     page: paging.page,
     limit: paging.limit,
     status: req.query.status as DailyStatus | undefined,
@@ -75,6 +79,7 @@ const exportData = catchAsync(async (req, res) => {
   await dailyStatusService.exportCsv(
     {
       date: req.query.date as string,
+      guildId: req.query.guildId as string | undefined,
       status: req.query.status as DailyStatus | undefined,
       search: req.query.search as string | undefined,
       format: req.query.format as 'csv' | 'xlsx' | undefined,
