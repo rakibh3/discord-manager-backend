@@ -6,10 +6,16 @@ import {
   isDailyUpdateChannelOpen,
   setDailyUpdateChannelOpen,
 } from '@/lib/discord/channel.state';
-import { isDiscordConnected } from '@/lib/discord/client';
 import {
+  getConfiguredGuilds,
+  isDiscordConnected,
+} from '@/lib/discord/client';
+import { guildLabel } from '@/lib/discord/fanout';
+import {
+  applyChannelState,
+  getLastRun,
+  getSchedulableGuilds,
   getSchedulerState,
-  recordRun,
   reloadChannelSchedule,
 } from '@/lib/scheduler/channelSchedule.scheduler';
 import {
@@ -17,6 +23,7 @@ import {
   type TChannelScheduleWithEditor,
 } from '@/repositories/channelSchedule.repository';
 import { DHAKA_TIMEZONE } from '@/utils/dhakaDate';
+import { requireAnyGuildSucceeded } from '@/utils/fanoutResult';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('ScheduleService');
@@ -28,9 +35,33 @@ type TUpdateSchedulePayload = {
   enabled?: boolean;
 };
 
-/** The stored row plus everything the dashboard needs around it. */
+/**
+ * The stored row plus everything the dashboard needs around it.
+ *
+ * ONE schedule, reported alongside the live state of EVERY configured server's
+ * channel. The schedule alone no longer describes what an administrator will
+ * see: two servers can disagree about whether their channel is open, and that
+ * disagreement is precisely what needs surfacing.
+ */
 const buildScheduleResponse = async (schedule: TChannelScheduleWithEditor) => {
   const scheduler = getSchedulerState();
+
+  // Sequential rather than `Promise.all`: this reads one live permission per
+  // server, and fan-out must not multiply the instantaneous Discord burst.
+  const servers = [];
+
+  for (const guild of getConfiguredGuilds()) {
+    servers.push({
+      guildId: guild.guildId,
+      label: guildLabel(guild),
+      channelId: getDailyUpdateChannelId(guild),
+      // Read live from Discord rather than from a stored flag — an admin can
+      // change the overwrite by hand at any time. `null` means it could not be
+      // read, which is reported as unknown rather than assumed.
+      isOpen: await isDailyUpdateChannelOpen(guild),
+      lastRun: getLastRun(guild.guildId),
+    });
+  }
 
   return {
     schedule: {
@@ -46,12 +77,7 @@ const buildScheduleResponse = async (schedule: TChannelScheduleWithEditor) => {
       updatedBy: schedule.updatedBy,
     },
     scheduler,
-    channel: {
-      id: getDailyUpdateChannelId(),
-      // Read live from Discord rather than from a stored flag — an admin can
-      // change the overwrite by hand at any time.
-      isOpen: await isDailyUpdateChannelOpen(),
-    },
+    servers,
   };
 };
 
@@ -113,7 +139,7 @@ const updateSchedule = async (
  * touch the stored schedule, so the next scheduled transition still fires
  * normally — a manual open at 2 AM does not become a new open time.
  */
-const setChannelState = async (open: boolean) => {
+const setChannelState = async (open: boolean, guildIds?: string[]) => {
   if (!isDiscordConnected()) {
     throw new AppError(
       httpStatus.SERVICE_UNAVAILABLE,
@@ -121,37 +147,56 @@ const setChannelState = async (open: boolean) => {
     );
   }
 
-  const result = await setDailyUpdateChannelOpen(open, { announce: true });
+  const schedulable = getSchedulableGuilds();
 
-  recordRun({
-    action: open ? 'open' : 'lock',
-    trigger: 'manual',
-    ranAt: new Date(),
-    ok: result.ok,
-    error: result.ok ? null : result.error,
-  });
+  // Naming a server that is not configured is refused rather than silently
+  // ignored: an admin who mistypes an ID must not be told the action succeeded
+  // everywhere while it in fact ran nowhere they intended.
+  if (guildIds?.length) {
+    const known = new Set(getConfiguredGuilds().map((g) => g.guildId));
+    const unknown = guildIds.filter((id) => !known.has(id));
 
-  if (!result.ok) {
-    throw new AppError(
-      result.missingPermission
-        ? httpStatus.FORBIDDEN
-        : httpStatus.SERVICE_UNAVAILABLE,
-      result.missingPermission
-        ? 'The bot lacks the "Manage Roles" permission on the daily-update channel, so it cannot change who may post there. Grant it in the channel settings and try again.'
-        : `The daily-update channel could not be ${open ? 'opened' : 'locked'}: ${result.error}`,
-    );
+    if (unknown.length > 0) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `Unknown server(s): ${unknown.join(', ')}. Configured servers are listed at GET /api/discord/servers.`,
+      );
+    }
   }
 
+  const targets = guildIds?.length
+    ? schedulable.filter((guild) => guildIds.includes(guild.guildId))
+    : schedulable;
+
+  const outcomes = await applyChannelState(targets, open, {
+    trigger: 'manual',
+    announce: true,
+  });
+
+  // Partial success is a SUCCESS carrying the failed server's reason. The
+  // channel really did open where it worked, and answering an error would tell
+  // the admin nothing happened — so they would retry, and re-announce into the
+  // server that already opened.
+  const envelope = requireAnyGuildSucceeded(
+    outcomes,
+    `The daily-update channel could not be ${open ? 'opened' : 'locked'}`,
+  );
+
   return {
-    channelId: getDailyUpdateChannelId(),
     isOpen: open,
-    announced: result.announced,
+    ...envelope,
+    servers: envelope.servers.map((outcome) => ({
+      ...outcome,
+      channelId:
+        getConfiguredGuilds().find((g) => g.guildId === outcome.guildId)
+          ?.channels.dailyUpdate ?? null,
+    })),
   };
 };
 
-const openChannelNow = () => setChannelState(true);
+const openChannelNow = (guildIds?: string[]) => setChannelState(true, guildIds);
 
-const lockChannelNow = () => setChannelState(false);
+const lockChannelNow = (guildIds?: string[]) => setChannelState(false, guildIds);
 
 export const scheduleService = {
   getSchedule,

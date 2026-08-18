@@ -6,23 +6,24 @@ import {
   type TextChannel,
 } from 'discord.js';
 
-import {
-  getDiscordClient,
-  getDiscordConfig,
-  isDiscordConnected,
-} from '@/lib/discord/client';
+import type { TGuildConfig } from '@/config/discord';
+import { getDiscordClient, isDiscordConnected } from '@/lib/discord/client';
 import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('ChannelState');
 
 /**
- * The only module that changes the daily-update channel's permissions.
+ * The only module that changes a daily-update channel's permissions.
  *
  * Three things drive the channel — the scheduled jobs, the boot reconcile, and
  * the admin's manual override — and all three come through here. A second path
  * that edits the overwrite slightly differently is how "the channel says it is
  * open but nobody can post" happens.
+ *
+ * Every function acts on ONE named server. The fan-out across servers lives in
+ * the callers (`channelSchedule.scheduler.ts` and `schedule.service.ts`), not
+ * here, so this module keeps exactly one job: editing one channel correctly.
  *
  * Nothing here throws. Its callers are a cron callback with no request to fail
  * and a service that turns a returned failure into an `AppError` itself, so
@@ -43,40 +44,42 @@ const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
- * The configured daily-update channel, or `null`.
+ * One server's daily-update channel, or `null`.
  *
- * Resolved by ID from `DAILY_UPDATE_CHANNEL_ID` — never by name, per the rule
- * that no logic keys off a channel's name. The guild check keeps a mistyped ID
- * pointing at some other server's channel from being edited.
+ * Resolved by ID from that server's configured channel — never by name, per the
+ * rule that no logic keys off a channel's name. That rule matters more with
+ * several servers, not less: every server names this channel identically, so a
+ * name lookup could not tell them apart at all.
+ *
+ * The guild check is kept even though `client.ts` verifies channel ownership at
+ * startup. It is cheap, it also covers a configuration reloaded after boot, and
+ * it is the last line between a swapped configuration and this module editing
+ * the WRONG server's permissions.
  */
-const resolveDailyUpdateChannel = async (): Promise<TextChannel | null> => {
-  const config = getDiscordConfig();
-
-  if (!config) {
-    logger.error('Discord is not configured; cannot resolve the channel.');
-    return null;
-  }
-
+const resolveDailyUpdateChannel = async (
+  guild: TGuildConfig,
+): Promise<TextChannel | null> => {
   if (!isDiscordConnected()) {
     logger.error('Discord bot is not connected; cannot resolve the channel.');
     return null;
   }
 
-  const channelId = config.channels.dailyUpdate;
+  const channelId = guild.channels.dailyUpdate;
 
   try {
     const channel = await getDiscordClient().channels.fetch(channelId);
 
     if (!channel || channel.type !== ChannelType.GuildText) {
       logger.error(
-        `DAILY_UPDATE_CHANNEL_ID ${channelId} is not a text channel in this server.`,
+        `Daily-update channel ${channelId} for guild ${guild.guildId} is not a text channel.`,
       );
       return null;
     }
 
-    if (channel.guild.id !== config.guildId) {
+    if (channel.guild.id !== guild.guildId) {
       logger.error(
-        `DAILY_UPDATE_CHANNEL_ID ${channelId} belongs to guild ${channel.guild.id}, not the configured ${config.guildId}.`,
+        `Daily-update channel ${channelId} belongs to guild ${channel.guild.id}, not the configured ${guild.guildId}. ` +
+          'The channel ID lists are positional — check that entry N of every list describes the same server.',
       );
       return null;
     }
@@ -84,7 +87,7 @@ const resolveDailyUpdateChannel = async (): Promise<TextChannel | null> => {
     return channel;
   } catch (error) {
     logger.error(
-      `Could not fetch daily-update channel ${channelId}:`,
+      `Could not fetch daily-update channel ${channelId} for guild ${guild.guildId}:`,
       describeError(error),
     );
     return null;
@@ -139,15 +142,16 @@ const buildAnnouncementEmbed = async (open: boolean): Promise<EmbedBuilder> => {
  * cosmetic next to a channel that never opened.
  */
 export const setDailyUpdateChannelOpen = async (
+  guild: TGuildConfig,
   open: boolean,
   { announce }: { announce: boolean },
 ): Promise<TChannelOperationResult> => {
-  const channel = await resolveDailyUpdateChannel();
+  const channel = await resolveDailyUpdateChannel(guild);
 
   if (!channel) {
     return {
       ok: false,
-      error: 'The daily-update channel could not be resolved.',
+      error: `The daily-update channel for guild ${guild.guildId} could not be resolved.`,
       missingPermission: false,
     };
   }
@@ -208,8 +212,10 @@ export const setDailyUpdateChannelOpen = async (
  * would then be confidently wrong on the dashboard and would make the boot
  * reconcile skip a correction it should have made.
  */
-export const isDailyUpdateChannelOpen = async (): Promise<boolean | null> => {
-  const channel = await resolveDailyUpdateChannel();
+export const isDailyUpdateChannelOpen = async (
+  guild: TGuildConfig,
+): Promise<boolean | null> => {
+  const channel = await resolveDailyUpdateChannel(guild);
 
   if (!channel) return null;
 
@@ -226,6 +232,6 @@ export const isDailyUpdateChannelOpen = async (): Promise<boolean | null> => {
   }
 };
 
-/** The configured channel ID, for status payloads. */
-export const getDailyUpdateChannelId = (): string | null =>
-  getDiscordConfig()?.channels.dailyUpdate ?? null;
+/** One server's configured channel ID, for status payloads. */
+export const getDailyUpdateChannelId = (guild: TGuildConfig): string =>
+  guild.channels.dailyUpdate;

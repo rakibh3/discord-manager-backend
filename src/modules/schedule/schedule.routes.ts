@@ -40,12 +40,14 @@ router.patch(
 router.post(
   '/daily-update/open',
   auth(UserRole.ADMIN),
+  validateRequest(scheduleValidation.channelStateValidationSchema),
   scheduleController.openChannel,
 );
 
 router.post(
   '/daily-update/lock',
   auth(UserRole.ADMIN),
+  validateRequest(scheduleValidation.channelStateValidationSchema),
   scheduleController.lockChannel,
 );
 

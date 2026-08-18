@@ -1,11 +1,16 @@
 import cron, { type ScheduledTask } from 'node-cron';
 
 import config from '@/config';
+import type { TGuildConfig } from '@/config/discord';
 import {
   isDailyUpdateChannelOpen,
   setDailyUpdateChannelOpen,
 } from '@/lib/discord/channel.state';
-import { isDiscordConnected } from '@/lib/discord/client';
+import {
+  getGuildsWithVerifiedChannel,
+  isDiscordConnected,
+} from '@/lib/discord/client';
+import { forEachGuild, type TGuildOutcome } from '@/lib/discord/fanout';
 import {
   channelScheduleRepository,
   type TChannelScheduleWithEditor,
@@ -33,6 +38,15 @@ const logger = createLogger('ChannelScheduler');
  * Data access goes through `channelScheduleRepository`, which is exactly why
  * the schedule lives in the repository layer: this file and the admin endpoints
  * must read one definition of the schedule, not two.
+ *
+ * ONE stored schedule drives EVERY configured server. The cron tasks are
+ * therefore registered once and fan out inside the callback, rather than one
+ * task per server: a single shared schedule must produce a single firing, and
+ * N tasks derived from one row would leave a reload that destroyed some but not
+ * others firing on a schedule no row describes.
+ *
+ * Servers are processed sequentially and independently — one server's missing
+ * `Manage Roles` must never stop another server's channel from opening.
  */
 
 export type TScheduleAction = 'open' | 'lock' | 'reconcile';
@@ -56,14 +70,27 @@ let lockTask: ScheduledTask | null = null;
  * than the logs, because a scheduler that cannot edit the overwrite has no
  * other symptom than a channel that never opens.
  */
-let lastRun: TLastRun | null = null;
+const lastRuns = new Map<string, TLastRun>();
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-export const recordRun = (run: TLastRun): void => {
-  lastRun = run;
+export const recordRun = (guildId: string, run: TLastRun): void => {
+  lastRuns.set(guildId, run);
 };
+
+export const getLastRun = (guildId: string): TLastRun | null =>
+  lastRuns.get(guildId) ?? null;
+
+/**
+ * The servers this scheduler acts on: those whose daily-update channel passed
+ * ownership verification at startup. A server whose channel resolves into a
+ * different guild is excluded rather than edited — editing it would change the
+ * WRONG server's permissions, and with identically named channels nothing about
+ * that would look wrong.
+ */
+export const getSchedulableGuilds = (): TGuildConfig[] =>
+  getGuildsWithVerifiedChannel('dailyUpdate');
 
 /**
  * Whether the given Dhaka moment falls inside the schedule's window.
@@ -94,10 +121,11 @@ export const isWithinWindow = (
  * Applies a state change and records the outcome. The single place any
  * scheduler-driven channel change passes through.
  */
-const runTransition = async (
+export const applyChannelState = async (
+  guilds: TGuildConfig[],
   open: boolean,
   { trigger, announce }: { trigger: TScheduleTrigger; announce: boolean },
-): Promise<void> => {
+): Promise<TGuildOutcome<{ announced: boolean }>[]> => {
   const action: TScheduleAction =
     trigger === 'reconcile' ? 'reconcile' : open ? 'open' : 'lock';
 
@@ -108,25 +136,64 @@ const runTransition = async (
       `Skipping ${open ? 'open' : 'lock'}: the Discord bot is not connected.`,
     );
 
-    recordRun({
+    for (const guild of guilds) {
+      recordRun(guild.guildId, {
+        action,
+        trigger,
+        ranAt: new Date(),
+        ok: false,
+        error: 'Discord bot is not connected',
+      });
+    }
+
+    return guilds.map((guild) => ({
+      guildId: guild.guildId,
+      label: guild.label ?? guild.guildId,
+      ok: false as const,
+      error: 'Discord bot is not connected',
+    }));
+  }
+
+  // Sequential and individually contained: every server is attempted, and one
+  // server's failure is recorded against that server alone.
+  return forEachGuild(guilds, async (guild) => {
+    const result = await setDailyUpdateChannelOpen(guild, open, { announce });
+
+    recordRun(guild.guildId, {
       action,
       trigger,
       ranAt: new Date(),
-      ok: false,
-      error: 'Discord bot is not connected',
+      ok: result.ok,
+      error: result.ok ? null : result.error,
     });
+
+    if (!result.ok) throw new Error(result.error);
+
+    return { announced: result.announced };
+  });
+};
+
+/** The scheduled firing: one task, fanning out over every schedulable server. */
+const runScheduledTransition = async (open: boolean): Promise<void> => {
+  const guilds = getSchedulableGuilds();
+
+  if (guilds.length === 0) {
+    logger.error(
+      `Skipping ${open ? 'open' : 'lock'}: no configured server has a verified daily-update channel.`,
+    );
     return;
   }
 
-  const result = await setDailyUpdateChannelOpen(open, { announce });
-
-  recordRun({
-    action,
-    trigger,
-    ranAt: new Date(),
-    ok: result.ok,
-    error: result.ok ? null : result.error,
+  const outcomes = await applyChannelState(guilds, open, {
+    trigger: 'schedule',
+    announce: true,
   });
+
+  const failed = outcomes.filter((outcome) => !outcome.ok);
+
+  logger.info(
+    `Scheduled ${open ? 'open' : 'lock'}: ${outcomes.length - failed.length}/${outcomes.length} server(s) succeeded.`,
+  );
 };
 
 /**
@@ -139,59 +206,78 @@ const runTransition = async (
  * reconcile is bookkeeping, and it is logged instead.
  */
 export const reconcileChannelState = async (): Promise<void> => {
+  let schedule: TChannelScheduleWithEditor;
+
   try {
-    const schedule = await channelScheduleRepository.getOrCreateSchedule();
+    schedule = await channelScheduleRepository.getOrCreateSchedule();
+  } catch (error) {
+    logger.error('Reconcile failed to read the schedule:', describeError(error));
+    return;
+  }
 
-    // A disabled schedule means "the scheduler is off", not "lock the channel".
-    // Forcing a state here would make disabling it a destructive action.
-    if (!schedule.enabled) {
-      logger.info('Schedule is disabled; leaving the channel as it is.');
-      return;
-    }
+  // A disabled schedule means "the scheduler is off", not "lock the channel".
+  // Forcing a state here would make disabling it a destructive action.
+  if (!schedule.enabled) {
+    logger.info('Schedule is disabled; leaving every channel as it is.');
+    return;
+  }
 
-    const shouldBeOpen = isWithinWindow(schedule);
-    const actuallyOpen = await isDailyUpdateChannelOpen();
+  const shouldBeOpen = isWithinWindow(schedule);
 
-    if (actuallyOpen === null) {
-      logger.error(
-        'Reconcile skipped: the channel state could not be read. See the error above.',
+  // Each server is reconciled independently and in its own try/catch: one
+  // server whose channel cannot be read must not stop the others from being
+  // corrected. A restart at 8 PM otherwise leaves a channel locked all evening
+  // with no error raised anywhere.
+  for (const guild of getSchedulableGuilds()) {
+    try {
+      const actuallyOpen = await isDailyUpdateChannelOpen(guild);
+
+      if (actuallyOpen === null) {
+        logger.error(
+          `Reconcile skipped for guild ${guild.guildId}: the channel state could not be read. See the error above.`,
+        );
+        recordRun(guild.guildId, {
+          action: 'reconcile',
+          trigger: 'reconcile',
+          ranAt: new Date(),
+          ok: false,
+          error: 'Channel state could not be read',
+        });
+        continue;
+      }
+
+      if (actuallyOpen === shouldBeOpen) {
+        logger.info(
+          `Reconcile: channel in guild ${guild.guildId} is already ${shouldBeOpen ? 'open' : 'locked'} as the schedule expects (window ${schedule.openTime}-${schedule.closeTime}, now ${getDhakaTimeOfDay()} Dhaka).`,
+        );
+        continue;
+      }
+
+      logger.info(
+        `Reconcile: channel in guild ${guild.guildId} is ${actuallyOpen ? 'open' : 'locked'} but the schedule says it should be ` +
+          `${shouldBeOpen ? 'open' : 'locked'} (window ${schedule.openTime}-${schedule.closeTime} on days ` +
+          `[${schedule.daysOfWeek.join(',')}], now ${getDhakaTimeOfDay()} Dhaka, weekday ${getDhakaWeekday()}). Correcting silently.`,
       );
-      recordRun({
+
+      // `announce: false` — a reconcile is bookkeeping, and a deploy that
+      // restarts the container five times must not post five embeds per server.
+      await applyChannelState([guild], shouldBeOpen, {
+        trigger: 'reconcile',
+        announce: false,
+      });
+    } catch (error) {
+      logger.error(
+        `Reconcile failed for guild ${guild.guildId}:`,
+        describeError(error),
+      );
+      recordRun(guild.guildId, {
         action: 'reconcile',
         trigger: 'reconcile',
         ranAt: new Date(),
         ok: false,
-        error: 'Channel state could not be read',
+        error: describeError(error),
       });
-      return;
     }
-
-    if (actuallyOpen === shouldBeOpen) {
-      logger.info(
-        `Reconcile: channel is already ${shouldBeOpen ? 'open' : 'locked'} as the schedule expects (window ${schedule.openTime}-${schedule.closeTime}, now ${getDhakaTimeOfDay()} Dhaka).`,
-      );
-      return;
-    }
-
-    logger.info(
-      `Reconcile: channel is ${actuallyOpen ? 'open' : 'locked'} but the schedule says it should be ` +
-        `${shouldBeOpen ? 'open' : 'locked'} (window ${schedule.openTime}-${schedule.closeTime} on days ` +
-        `[${schedule.daysOfWeek.join(',')}], now ${getDhakaTimeOfDay()} Dhaka, weekday ${getDhakaWeekday()}). Correcting silently.`,
-    );
-
-    await runTransition(shouldBeOpen, {
-      trigger: 'reconcile',
-      announce: false,
-    });
-  } catch (error) {
-    logger.error('Reconcile failed:', describeError(error));
-    recordRun({
-      action: 'reconcile',
-      trigger: 'reconcile',
-      ranAt: new Date(),
-      ok: false,
-      error: describeError(error),
-    });
   }
 };
 
@@ -232,17 +318,17 @@ const registerTasks = (schedule: TChannelScheduleWithEditor): void => {
   // `timezone` is what makes the stored `18:00` mean 18:00 in Dhaka rather than
   // 18:00 wherever the server happens to be. `noOverlap` keeps a slow Discord
   // call from being re-entered by the next firing.
-  openTask = cron.schedule(
-    openExpression,
-    () => runTransition(true, { trigger: 'schedule', announce: true }),
-    { timezone: DHAKA_TIMEZONE, name: 'daily-update-open', noOverlap: true },
-  );
+  openTask = cron.schedule(openExpression, () => runScheduledTransition(true), {
+    timezone: DHAKA_TIMEZONE,
+    name: 'daily-update-open',
+    noOverlap: true,
+  });
 
-  lockTask = cron.schedule(
-    lockExpression,
-    () => runTransition(false, { trigger: 'schedule', announce: true }),
-    { timezone: DHAKA_TIMEZONE, name: 'daily-update-lock', noOverlap: true },
-  );
+  lockTask = cron.schedule(lockExpression, () => runScheduledTransition(false), {
+    timezone: DHAKA_TIMEZONE,
+    name: 'daily-update-lock',
+    noOverlap: true,
+  });
 
   logger.info(
     `Registered open "${openExpression}" and lock "${lockExpression}" in ${DHAKA_TIMEZONE} ` +
@@ -315,7 +401,12 @@ export type TSchedulerState = {
   running: boolean;
   nextOpenAt: Date | null;
   nextLockAt: Date | null;
-  lastRun: TLastRun | null;
+  /**
+   * The most recent outcome per configured server. Keyed rather than singular
+   * because a permission gap in one server is the case that matters, and a
+   * single `lastRun` would let the healthy server's success hide it.
+   */
+  lastRunByGuild: Record<string, TLastRun>;
 };
 
 /**
@@ -329,5 +420,5 @@ export const getSchedulerState = (): TSchedulerState => ({
   running: Boolean(openTask && lockTask),
   nextOpenAt: openTask?.getNextRun() ?? null,
   nextLockAt: lockTask?.getNextRun() ?? null,
-  lastRun,
+  lastRunByGuild: Object.fromEntries(lastRuns.entries()),
 });
