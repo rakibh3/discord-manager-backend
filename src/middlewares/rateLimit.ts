@@ -86,3 +86,21 @@ export const submitAttendanceRateLimiter = rateLimit({
     'Too many attendance submissions from this device. Please wait a few minutes and try again.',
   ),
 });
+
+/**
+ * Sized to one call per page load: 60 per minute leaves generous room for
+ * reloads and for several students behind one NAT while still bounding an
+ * abusive client.
+ *
+ * Stays on the process-local in-memory store for the reason documented above:
+ * a Redis outage on the students' submission path is not an acceptable failure
+ * mode, and swapping the public limiters onto Redis needs its own decision.
+ */
+export const attendanceWindowRateLimiter = rateLimit({
+  ...publicLimiterDefaults,
+  windowMs: 60 * 1000,
+  limit: 60,
+  handler: throttled(
+    'Too many window check requests. Please wait a minute and try again.',
+  ),
+});

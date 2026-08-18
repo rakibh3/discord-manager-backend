@@ -14,6 +14,10 @@ import {
   stopReminderWorker,
 } from '@/lib/queue/reminder.worker';
 import {
+  startAnnouncementScheduler,
+  stopAnnouncementScheduler,
+} from '@/lib/scheduler/announcement.scheduler';
+import {
   startChannelScheduler,
   stopChannelScheduler,
 } from '@/lib/scheduler/channelSchedule.scheduler';
@@ -42,6 +46,7 @@ const shutdown = async (signal: string) => {
   // already in flight finish, and anything still queued stays in Redis for the
   // next process to pick up.
   await stopChannelScheduler();
+  await stopAnnouncementScheduler();
   await stopReminderWorker();
   await stopDiscordBot();
 
@@ -86,13 +91,24 @@ async function main() {
         // running, which is the honest answer.
         if (!started) {
           logger.warn(
-            'Channel scheduler and reminder worker not started: the Discord bot is not running.',
+            'Channel scheduler, announcement scheduler and reminder worker not started: the Discord bot is not running.',
           );
           return;
         }
 
         onDiscordReady(() => {
           void startChannelScheduler();
+
+          // Its own call and its own catch: the announcement and the open/lock
+          // window are independent features that happen to run at the same
+          // hour, and a failure to register one must not stop the other from
+          // running tonight.
+          void startAnnouncementScheduler().catch((error) => {
+            logger.error(
+              'Announcement scheduler failed to start; everything else continues:',
+              error,
+            );
+          });
 
           // A job cannot deliver a DM without a connected client, so the worker
           // waits for the same signal. Starting it earlier would only pull jobs

@@ -37,7 +37,20 @@ const submitAttendance = catchAsync(async (req, res) => {
   });
 });
 
+// Public projection of the submission window for the attendance form.
+const getAttendanceWindow = catchAsync(async (_req, res) => {
+  const result = await attendanceService.getAttendanceWindow();
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: 'Attendance window retrieved successfully',
+    data: result,
+  });
+});
+
 export const attendanceController = {
   verifyUser,
   submitAttendance,
+  getAttendanceWindow,
 };

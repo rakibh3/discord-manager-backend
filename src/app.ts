@@ -5,6 +5,7 @@ import express, { Application } from 'express';
 import config from '@/config';
 import errorHandler from '@/errors/globalErrorHandler';
 import { notFoundRoute } from '@/errors/notFound';
+import { announcementRouter } from '@/modules/announcement/announcement.routes';
 import { attendanceRouter } from '@/modules/attendance/attendance.routes';
 import { authRouter } from '@/modules/auth/auth.routes';
 import { dailyStatusRouter } from '@/modules/dailyStatus/dailyStatus.routes';
@@ -41,6 +42,7 @@ app.use('/api/discord', discordRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/daily-status', dailyStatusRouter);
 app.use('/api/reminders', reminderRouter);
+app.use('/api/announcement', announcementRouter);
 // The only unauthenticated router in the application — students have no
 // account to authenticate with. See attendance.routes.ts.
 app.use('/api/attendance', attendanceRouter);

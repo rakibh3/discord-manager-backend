@@ -96,6 +96,87 @@ export const getDhakaWeekday = (instant: Date = new Date()): number => {
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 };
 
+/**
+ * Formatter used to derive Dhaka's GMT offset at a given instant.
+ *
+ * Bangladesh observes no DST today (+06:00), but has observed DST as recently
+ * as 2009. Deriving the offset from `Intl` via `DHAKA_TIMEZONE` keeps
+ * `DHAKA_TIMEZONE` the single definition of the zone in the entire system,
+ * so any future DST rule changes follow the runtime's tz database rather than
+ * drifting from hardcoded offsets.
+ */
+const dhakaOffsetFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: DHAKA_TIMEZONE,
+  timeZoneName: 'longOffset',
+});
+
+/**
+ * Extracts Dhaka's timezone offset in minutes from an approximate instant.
+ *
+ * Defensively falls back to +360 minutes (+06:00) if the runtime returns an
+ * unexpected format, ensuring that calling routes never throw a 500 error.
+ */
+const getDhakaOffsetMinutes = (instant: Date): number => {
+  try {
+    const parts = dhakaOffsetFormatter.formatToParts(instant);
+    const tzPart = parts.find((p) => p.type === 'timeZoneName')?.value;
+    if (tzPart) {
+      const match = tzPart.match(/GMT([+-])(\d{1,2}):?(\d{2})?/);
+      if (match) {
+        const sign = match[1] === '-' ? -1 : 1;
+        const hours = Number(match[2]);
+        const mins = Number(match[3] ?? '0');
+        return sign * (hours * 60 + mins);
+      }
+    }
+  } catch {
+    // Fall back to standard Dhaka offset (+06:00)
+  }
+  return 6 * 60;
+};
+
+/**
+ * Converts a Dhaka wall-clock date (`YYYY-MM-DD`) and time (`HH:mm`) into an
+ * absolute `Date` instant.
+ *
+ * Interprets the wall clock as a UTC timestamp initially, derives Dhaka's
+ * GMT offset at that approximate instant via `Intl`, and subtracts it to produce
+ * the exact UTC instant.
+ *
+ * Independent of the server's own `TZ`.
+ */
+export const dhakaWallClockToInstant = (
+  date: string,
+  time: string,
+): Date => {
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  const hour = Number(time.slice(0, 2));
+  const minute = Number(time.slice(3, 5));
+
+  const utcMs = Date.UTC(year, month - 1, day, hour, minute);
+  const offsetMinutes = getDhakaOffsetMinutes(new Date(utcMs));
+
+  return new Date(utcMs - offsetMinutes * 60 * 1000);
+};
+
+/**
+ * Adds (or subtracts) a given number of days to/from a `YYYY-MM-DD` Dhaka civil date,
+ * returning the resulting `YYYY-MM-DD` string.
+ *
+ * Uses `Date.UTC(year, month - 1, day + days)` reformatted through `getDhakaDate`,
+ * matching the technique `getDhakaWeekday` uses so month and year rollovers
+ * come reliably from the platform.
+ */
+export const addDhakaDays = (date: string, days: number): string => {
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+
+  return getDhakaDate(new Date(Date.UTC(year, month - 1, day + days)));
+};
+
 /** Shape check only. A well-formed-looking `2026-02-30` still passes this. */
 const DHAKA_DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
 

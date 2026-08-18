@@ -36,6 +36,18 @@
       "value": "",
       "type": "string",
       "description": "Set automatically by the Send Reminder Broadcast request."
+    },
+    {
+      "key": "dailyStatusDate",
+      "value": "2026-08-18",
+      "type": "string",
+      "description": "Dhaka date (YYYY-MM-DD) for dashboard status queries."
+    },
+    {
+      "key": "dailyStatusMemberId",
+      "value": "",
+      "type": "string",
+      "description": "CUID of a DiscordMember for single-member status lookup."
     }
   ],
   "event": [
@@ -523,8 +535,59 @@
     },
     {
       "name": "Attendance (Public)",
-      "description": "The web attendance form's two endpoints. These are the ONLY routes in the API with no auth middleware - students are not `users` rows and have no credential to present. Two things stand in for authentication: the handle must resolve to a member currently in the guild, and the caller must be within its per-IP budget (60/min on verify-user, 5/15min on submit). Set the {{attendanceUsername}} variable to a real synced member's handle before running these.",
+      "description": "The web attendance form's public endpoints. These are the ONLY routes in the API with no auth middleware - students are not `users` rows and have no credential to present. Two things stand in for authentication on verify and submit: the handle must resolve to a member currently in the guild, and the caller must be within its per-IP budget (60/min on window & verify-user, 5/15min on submit). Set the {{attendanceUsername}} variable to a real synced member's handle before running these.",
       "item": [
+        {
+          "name": "Get Attendance Window",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Attendance window projection returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('isOpen');",
+                  "    pm.expect(jsonData.data).to.have.property('date');",
+                  "    pm.expect(jsonData.data).to.have.property('openTime');",
+                  "    pm.expect(jsonData.data).to.have.property('closeTime');",
+                  "    pm.expect(jsonData.data).to.have.property('daysOfWeek');",
+                  "    pm.expect(jsonData.data).to.have.property('enabled');",
+                  "    pm.expect(jsonData.data).to.have.property('timezone');",
+                  "    pm.expect(jsonData.data).to.have.property('nextOpenAt');",
+                  "    pm.expect(jsonData.data).to.have.property('closesAt');",
+                  "    pm.expect(jsonData.data).to.not.have.property('updatedBy');",
+                  "    pm.expect(jsonData.data).to.not.have.property('scheduler');",
+                  "});",
+                  "",
+                  "pm.test('Rate limit headers present', function () {",
+                  "    pm.expect(pm.response.headers.has('RateLimit-Limit')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/window",
+            "description": "Public projection of the attendance submission window. Requires no authentication.\n\n`isOpen` is computed from the schedule row and Asia/Dhaka clock (zero Discord API calls). Responses contain exactly 9 fields with no administrative leakage (no updatedBy, scheduler, or channel ID)."
+          }
+        },
         {
           "name": "Verify Discord Username - Found",
           "event": [
@@ -986,6 +1049,774 @@
                   "pm.test('Last fallback announcement did not fail', function () {",
                   "    const fb = jsonData.data.lastFallback;",
                   "    if (fb) { pm.expect(fb.ok, fb.error || '').to.be.true; }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Attendance Announcement",
+      "description": "The evening announcement posted to #attendance (requires ADMIN role). Nothing here is student-facing.\n\nThe message and its schedule are stored in the database, not in code or .env, and take effect without a restart. announceTime is HH:mm wall-clock in Asia/Dhaka; the cron expression is derived by the backend and never exposed.\n\n⚠️ MENTIONS: they come ONLY from the structured allowlist (mentionRoleIds, mentionUsernames, mentionEveryone). Mention text typed into the body is inert — allowedMentions is built from the allowlist alone, so a stray @everyone in the message cannot ping anybody. Conversely, mentionEveryone: true pings every member of the guild every evening until it is turned off.\n\nDUPLICATES: at most one post per Dhaka day, enforced by a database claim rather than by timing. A second send returns 409; { \"force\": true } is the only way past it. Beneath that, every send carries enforceNonce with a deterministic nonce, because discord.js retries a REST call that times out and Discord may already have created the message — without the nonce one logical send can leave several identical messages in the channel.\n\nOperational prerequisite: the bot needs \"Send Messages\" on the attendance channel. Without it every send fails, which is reported as a 403 on send and under `scheduler.lastOutcome` on the read.",
+      "item": [
+        {
+          "name": "Get Announcement",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "description": "Requires admin auth. Returns:\n\n- `template` - the stored body with placeholders unexpanded, terminationDays, the mention allowlist, the @everyone flag, and who last changed it.\n- `schedule` - announceTime, daysOfWeek (0=Sunday..6=Saturday), enabled, and the fixed `timezone` (Asia/Dhaka, reported but never accepted).\n- `preview` - the message exactly as it would be posted right now: placeholders expanded, mention line appended, its length against Discord's 2000-character limit, the closeTime it read from the #daily-update schedule, and which allowlist entries resolved.\n- `supportedPlaceholders` - the only tokens a body may use.\n- `scheduler` - whether THIS process runs the timed post (`processEnabled`, from SCHEDULER_ENABLED), whether a task is registered (`running`), `nextRunAt`, and `lastOutcome`.\n- `today` - whether today has been posted, and every attempt with its status and error.\n\nCheck `scheduler.lastOutcome` first when the channel goes quiet: a missing Send Messages permission surfaces here."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Announcement retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.template).to.have.property('body');",
+                  "    pm.expect(jsonData.data.schedule.timezone).to.eql('Asia/Dhaka');",
+                  "    pm.expect(jsonData.data.preview).to.have.property('content');",
+                  "    pm.expect(jsonData.data.today).to.have.property('posted');",
+                  "});",
+                  "",
+                  "// The body is the RAW template with placeholders intact; preview.content is",
+                  "// what students would actually read. An editor must bind to the former.",
+                  "pm.test('Preview expanded, template did not', function () {",
+                  "    pm.expect(jsonData.data.preview.content).to.not.include('{{date}}');",
+                  "});",
+                  "",
+                  "// A missing Send Messages permission has no symptom but a quiet channel.",
+                  "const outcome = jsonData.data.scheduler && jsonData.data.scheduler.lastOutcome;",
+                  "if (outcome && outcome.result && outcome.result.status === 'failed') {",
+                  "    console.warn('⚠️ Last announcement failed: ' + outcome.result.error);",
+                  "}",
+                  "",
+                  "// Nightly mass ping — worth seeing in the runner output.",
+                  "if (jsonData.data.template.mentionEveryone) {",
+                  "    console.warn('⚠️ mentionEveryone is ON — every post pings the whole guild');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Announcement",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Date: {{date}}\\nSubmit the attendance form before {{close_time}} and post your update in {{daily_update_channel_id}}.\\n\\nForm: {{attendance_form_link}}\\n\\nMissing {{termination_day}} consecutive days means removal from the process.\",\n  \"terminationDays\": 3,\n  \"mentionEveryone\": false,\n  \"mentionRoleIds\": [],\n  \"mentionUsernames\": [],\n  \"announceTime\": \"19:00\",\n  \"daysOfWeek\": [\n    0,\n    1,\n    2,\n    3,\n    4,\n    5,\n    6\n  ],\n  \"enabled\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Partial update - send only what changes; an entirely empty body is rejected.\n\nA body may use only the supported placeholders. An unknown one ({{attendance_link}}) is a 400 naming the token and listing the supported set, because left in the text it would reach the whole program as literal characters.\n\nThe length check measures the RENDERED message including the mention line, not the raw body, so placeholder expansion and a long mention list are accounted for.\n\nmentionUsernames are Discord handles (normalized, lowercased); mentionRoleIds are 17-20 digit snowflakes. Shape is validated here; whether a role or member still exists is resolved at post time, and an entry that no longer resolves is dropped from that post and recorded rather than blocking it.\n\nmentionEveryone is the ONLY way the announcement can notify the whole guild. Off by default, and who turned it on is recorded.\n\nChanging announceTime, daysOfWeek, or enabled destroys and re-registers the cron task immediately - no restart. Unlike the channel schedule, there is no reconcile: a missed announcement is never posted late."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Announcement updated', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.preview.length).to.be.at.most(jsonData.data.preview.limit);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Announcement - Unknown Placeholder (400)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Date: {{date}}\\nForm: {{attendance_link}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Rejected with 400 naming the unknown token and listing the supported set.\n\nThe check runs in the service rather than in Zod on purpose: handleZodValidationError Title-Cases every word of a Zod message, which would hand the admin `{{Close_time}}` — and this message exists precisely to tell them the exact string to type. Show it verbatim.\n\nLeft in the text, an unknown placeholder reaches the whole program as literal characters in the evening announcement."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Unknown placeholder rejected verbatim', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(jsonData.success).to.be.false;",
+                  "    pm.expect(jsonData.message).to.include('{{attendance_link}}');",
+                  "    pm.expect(jsonData.message).to.include('{{close_time}}');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Announcement - Enable @everyone",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mentionEveryone\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "⚠️ Turns the nightly announcement into a guild-wide ping and LEAVES IT ON until something turns it off.\n\nThis flag is the only way the announcement can notify everyone. It is deliberately not expressible as an entry in mentionRoleIds, because Discord's @everyone role ID is the guild ID — an accident waiting to happen in a free-text field.\n\nThe admin who set it is recorded in template.updatedBy. Verify against the rendered mention line before sending anything."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('@everyone enabled and reflected in the mention line', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data.template.mentionEveryone).to.be.true;",
+                  "    pm.expect(jsonData.data.preview.content).to.include('@everyone');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Announcement - Clear All Mentions",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mentionEveryone\": false,\n  \"mentionRoleIds\": [],\n  \"mentionUsernames\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Empty arrays clear the allowlist — this is the \"notify nobody\" state, and the one the row is born with.\n\nContrast daysOfWeek, where an empty array is a 400: a schedule that can never fire is a mistake, while a mention list that pings nobody is a legitimate choice."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Mentions cleared', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data.template.mentionEveryone).to.be.false;",
+                  "    pm.expect(jsonData.data.preview.mentions.userIds).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Announcement - Bad Role ID (400)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mentionRoleIds\": [\n    \"12345\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Rejected with 400 — a role entry must be a 17-20 digit snowflake.\n\nOnly the SHAPE is checked here. Whether the role still exists is resolved at post time, because a role can be deleted between the save and 19:00; an entry that no longer resolves is dropped from that post and recorded in unresolvedTargets rather than blocking the announcement."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Malformed role ID rejected', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(jsonData.success).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Announcement - No Weekdays (400)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/announcement/attendance",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"daysOfWeek\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Rejected with 400, exactly as on the channel schedule. A schedule that can never fire is a mistake, not a way to pause. Use `{ \"enabled\": false }` to pause while keeping the message and the times."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Empty weekday list rejected', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(jsonData.success).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Preview Announcement",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/announcement/attendance/preview",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Date: {{date}} - form closes at {{close_time}}. {{attendance_form_link}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Renders a body against today's live values and stores nothing. Send an empty object to preview what is currently stored.\n\nThe preview is produced by the same renderer the 7 PM post uses, so what is shown here is what students will read."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Preview rendered without saving', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('content');",
+                  "    pm.expect(jsonData.data.withinLimit).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Preview Stored Template",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/announcement/attendance/preview",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "An empty body previews what is currently stored — the fastest way to see tonight's message without touching anything.\n\nNote `closeTime` in the response: it is read from the #daily-update schedule, not stored on the template, so changing the close time in Channel Schedule changes this message with nobody editing it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Stored template previewed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data).to.have.property('closeTime');",
+                  "    pm.expect(jsonData.data.withinLimit).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Announcement Now",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/announcement/attendance/send",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"force\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Posts the announcement immediately, leaving the stored schedule untouched. Works on every process, including one where SCHEDULER_ENABLED is false.\n\nRespects the once-per-day claim: if today is already posted the request is a 409 naming the earlier post, and nothing is sent. `{ \"force\": true }` posts a deliberate second message as the next attempt.\n\nA failed send does NOT consume the day - a later attempt on the same date is allowed to post.\n\n403 means the bot lacks \"Send Messages\" on the attendance channel. 503 means the bot is not connected or Discord refused the message."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Announcement posted', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('discordMessageId');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Announcement - Duplicate (409)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/announcement/attendance/send",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Run \"Send Announcement Now\" first, then this. The message names the earlier post's time and attempt number.\n\nThe refusal comes from the (key, announcement_date, attempt) unique constraint, not from a read-then-write check — a pre-check would let a process restarting at 19:00 and an admin clicking Send both through. Same reasoning as the attendance duplicate in the public folder.\n\nA FAILED attempt does NOT produce this: a failed send never consumes the day, and a plain retry is allowed to post."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Second send today refused, nothing posted', function () {",
+                  "    pm.response.to.have.status(409);",
+                  "    pm.expect(jsonData.success).to.be.false;",
+                  "    pm.expect(jsonData.message).to.include('already sent');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Announcement - Force Second Post",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/announcement/attendance/send",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"force\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "⚠️ Posts a SECOND real message today, filed as the next attempt. The only way past the once-per-day claim.\n\nUse it to recover a day stuck in SENDING (a crash between the claim and the post), or when a second announcement is genuinely intended. A losing race here hits the unique constraint and reports a conflict rather than posting twice."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Forced second post recorded as a new attempt', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data.attempt).to.be.above(1);",
+                  "    pm.expect(jsonData.data).to.have.property('discordMessageId');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Daily Status",
+      "description": "Admin dashboard daily status aggregation and export endpoints (requires ADMIN role).\n\nProvides overview status counts for a date, paginated active member status table with filtering and search, single member daily update message audit, and streamed CSV export.",
+      "item": [
+        {
+          "name": "Get Daily Status Counts",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status/counts?date={{dailyStatusDate}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "counts"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{dailyStatusDate}}",
+                  "description": "Asia/Dhaka civil date (YYYY-MM-DD)"
+                }
+              ]
+            },
+            "description": "Summary overview figures for a given date. Guaranteed JSON numbers.\n\nInvariant: `bothComplete + missingUpdateOnly + missingAttendanceOnly + missingBoth === totalMembers`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status counts returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('date');",
+                  "    pm.expect(jsonData.data).to.have.property('totalMembers');",
+                  "    pm.expect(jsonData.data).to.have.property('attendanceSubmitted');",
+                  "    pm.expect(jsonData.data).to.have.property('dailyUpdateSubmitted');",
+                  "    pm.expect(jsonData.data).to.have.property('bothComplete');",
+                  "    pm.expect(jsonData.data).to.have.property('missingUpdateOnly');",
+                  "    pm.expect(jsonData.data).to.have.property('missingAttendanceOnly');",
+                  "    pm.expect(jsonData.data).to.have.property('missingBoth');",
+                  "",
+                  "    const d = jsonData.data;",
+                  "    pm.expect(typeof d.totalMembers).to.equal('number');",
+                  "    pm.expect(d.bothComplete + d.missingUpdateOnly + d.missingAttendanceOnly + d.missingBoth).to.equal(d.totalMembers);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{dailyStatusDate}}",
+                  "description": "Asia/Dhaka civil date (YYYY-MM-DD)"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Paginated member status table for a date."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Daily status page returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.meta).to.have.property('page', 1);",
+                  "    pm.expect(jsonData.meta).to.have.property('limit', 50);",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});",
+                  "",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('dailyStatusMemberId', jsonData.data[0].memberId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page - Filtered by Status",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&status=MISSING_UPDATE&page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{dailyStatusDate}}"
+                },
+                {
+                  "key": "status",
+                  "value": "MISSING_UPDATE",
+                  "description": "COMPLETE | MISSING_UPDATE | MISSING_ATTENDANCE | MISSING_BOTH"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Filtered by status. Meta total reflects the filtered count."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Filtered daily status returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "    jsonData.data.forEach(function(row) {",
+                  "        pm.expect(row.status).to.equal('MISSING_UPDATE');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Daily Status Page - Search",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&search=rakib&page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{dailyStatusDate}}"
+                },
+                {
+                  "key": "search",
+                  "value": "rakib",
+                  "description": "Case-insensitive partial match on name, phone, email, or discordUsername"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Searches member directory fields case-insensitively."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Search results returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(Array.isArray(jsonData.data)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Member Daily Status",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status/members/{{dailyStatusMemberId}}?date={{dailyStatusDate}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "members", "{{dailyStatusMemberId}}"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{dailyStatusDate}}"
+                }
+              ]
+            },
+            "description": "Single member status and their posted #daily-update messages for that date. 404 if memberId is unknown."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Member daily status retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('memberId');",
+                  "    pm.expect(jsonData.data).to.have.property('status');",
+                  "    pm.expect(Array.isArray(jsonData.data.messages)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Export Daily Status CSV",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/daily-status/export?date={{dailyStatusDate}}&format=csv",
+              "host": ["{{baseUrl}}"],
+              "path": ["daily-status", "export"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{dailyStatusDate}}"
+                },
+                {
+                  "key": "format",
+                  "value": "csv"
+                }
+              ]
+            },
+            "description": "Streams filtered daily status rows as a CSV file attachment. Values with =, +, -, @ are escaped to prevent formula injection."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('CSV attachment returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('text/csv');",
+                  "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment');",
                   "});"
                 ]
               }

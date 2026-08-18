@@ -2,12 +2,20 @@ import { Prisma } from '@generated/prisma/client';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
+import { isWithinWindow } from '@/lib/scheduler/channelSchedule.scheduler';
 import { attendanceRepository } from '@/repositories/attendance.repository';
+import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
 import {
   memberRepository,
   VerifiedMember,
 } from '@/repositories/member.repository';
-import { getDhakaDate } from '@/utils/dhakaDate';
+import {
+  addDhakaDays,
+  DHAKA_TIMEZONE,
+  dhakaWallClockToInstant,
+  getDhakaDate,
+  getDhakaWeekday,
+} from '@/utils/dhakaDate';
 import { normalizeDiscordUsername } from '@/utils/discordUsername';
 
 /**
@@ -186,7 +194,78 @@ const submitAttendance = async (payload: TSubmitAttendancePayload) => {
   }
 };
 
+export type TAttendanceWindowResult = {
+  isOpen: boolean;
+  date: string;
+  openTime: string;
+  closeTime: string;
+  daysOfWeek: number[];
+  enabled: boolean;
+  timezone: string;
+  nextOpenAt: Date | null;
+  closesAt: Date | null;
+};
+
+/**
+ * Projection of the current attendance submission window for the public form.
+ *
+ * Sourced entirely from the `channel_schedules` row and the Dhaka clock.
+ * Deliberately performs no external I/O (no Discord API calls) so high student
+ * traffic cannot exhaust Discord rate limits or degrade member sync.
+ */
+const getAttendanceWindow = async (): Promise<TAttendanceWindowResult> => {
+  const schedule = await channelScheduleRepository.getOrCreateSchedule();
+  const now = new Date();
+  const today = getDhakaDate(now);
+
+  // `isWithinWindow` deliberately ignores `enabled` because the scheduler treats
+  // disabled as "leave the channel alone", whereas here disabled means the form never opens.
+  const isOpen = schedule.enabled && isWithinWindow(schedule, now);
+
+  const closesAt = isOpen
+    ? dhakaWallClockToInstant(today, schedule.closeTime)
+    : null;
+
+  let nextOpenAt: Date | null = null;
+  if (schedule.enabled) {
+    // Scan up to 8 candidate days starting from today's Dhaka civil date (offset 0..7).
+    // 8 rather than 7 so a single-day schedule already past today resolves to next week.
+    for (let offset = 0; offset <= 7; offset++) {
+      const candidateDate = addDhakaDays(today, offset);
+      const candidateInstant = dhakaWallClockToInstant(
+        candidateDate,
+        schedule.openTime,
+      );
+      const candidateWeekday = getDhakaWeekday(candidateInstant);
+
+      if (schedule.daysOfWeek.includes(candidateWeekday)) {
+        if (candidateInstant.getTime() > now.getTime()) {
+          nextOpenAt = candidateInstant;
+          break;
+        }
+      }
+    }
+  }
+
+  // The explicit literal is the leak barrier: `getOrCreateSchedule()` returns
+  // `TChannelScheduleWithEditor` carrying `updatedBy` (admin name and email).
+  // A spread-and-omit would expose any field later added to the row or the include,
+  // on the one route reachable without a token.
+  return {
+    isOpen,
+    date: today,
+    openTime: schedule.openTime,
+    closeTime: schedule.closeTime,
+    daysOfWeek: schedule.daysOfWeek,
+    enabled: schedule.enabled,
+    timezone: DHAKA_TIMEZONE,
+    nextOpenAt,
+    closesAt,
+  };
+};
+
 export const attendanceService = {
   verifyUser,
   submitAttendance,
+  getAttendanceWindow,
 };

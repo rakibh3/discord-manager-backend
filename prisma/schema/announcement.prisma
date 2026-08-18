@@ -1,0 +1,145 @@
+// The evening announcement posted to #attendance: the admin-editable message,
+// its own daily schedule, and one row per send attempt.
+//
+// Deliberately NOT part of `ChannelSchedule`. That row means "when may students
+// post", and it is read by the open/lock jobs and the boot reconcile. Hanging a
+// message body and a third time on it would make the announcement's schedule a
+// field of the submission window — exactly the coupling this feature must not
+// have. The two share one *value* (`closeTime`, read at render time) and no
+// control.
+
+enum AnnouncementStatus {
+  // Claimed, not yet confirmed posted. The claim is taken BEFORE the send, so a
+  // crash in between leaves a visible SENDING row that self-blocks the day
+  // rather than a silent duplicate mass-mention. Recoverable with a forced
+  // manual send; the inverse is not recoverable at all.
+  SENDING
+  POSTED
+  FAILED
+}
+
+enum AnnouncementTrigger {
+  SCHEDULED
+  MANUAL
+}
+
+// The one stored announcement. One keyed row, created lazily on first access.
+model AnnouncementTemplate {
+  id String @id @default(uuid())
+
+  // Which announcement this is. One row per key, and today there is exactly one
+  // (`ATTENDANCE_DAILY`). Keyed rather than a hard-coded singleton id for the
+  // same reason `channel_schedules` is.
+  key String @unique
+
+  // The message as an admin typed it, placeholders unexpanded. Substitution
+  // happens at render time so `{{close_time}}` always states the time the
+  // scheduler will actually enforce, not a copy that drifted.
+  body String @db.Text
+
+  // Consecutive missed days before removal, rendered into `{{termination_day}}`.
+  // A number rather than text in the body so the threshold can be changed in one
+  // place and never disagrees with itself across a rewritten message.
+  terminationDays Int @default(3) @map("termination_days")
+
+  // ── The mention allowlist ────────────────────────────────────────────────
+  // Mentions are structured data, never parsed out of `body`. `allowedMentions`
+  // is built from these three fields alone, so a stray `@everyone` typed into
+  // the text is inert.
+  //
+  // `mentionEveryone` is its own boolean rather than an entry in
+  // `mentionRoleIds` because Discord's @everyone role ID is the guild ID — an
+  // admin discovering that in a free-text field is an accident waiting to
+  // happen. Off by default; `updatedById` records who turned it on.
+  mentionEveryone  Boolean  @default(false) @map("mention_everyone")
+  mentionRoleIds   String[] @map("mention_role_ids")
+  // Discord handles, normalized and lowercased. Stored as handles rather than
+  // snowflakes so the list stays readable in the dashboard; resolved to user IDs
+  // at post time through the same lookup the attendance form uses.
+  mentionUsernames String[] @map("mention_usernames")
+
+  // ── Its own schedule ─────────────────────────────────────────────────────
+  // `HH:mm` wall-clock in Asia/Dhaka, `String` for the same reason
+  // `channel_schedules.open_time` is: a `DateTime` round-trips through a
+  // timezone-carrying JS Date and can be shifted by a driver or the server's TZ,
+  // which would move the announcement off the day it announces. A string cannot
+  // be silently shifted, and `HH:mm` compares and sorts correctly as text.
+  //
+  // There is deliberately NO timezone column. Every date in the attendance
+  // domain is an Asia/Dhaka civil date, so an announcement scheduled in another
+  // zone would fire out of step with the day it names. The zone is the
+  // DHAKA_TIMEZONE constant, reported in the API and never accepted.
+  announceTime String @default("19:00") @map("announce_time")
+
+  // Weekdays this runs on, 0 = Sunday through 6 = Saturday — cron's own
+  // numbering, so this array feeds the cron expression without a second
+  // convention.
+  daysOfWeek Int[] @default([0, 1, 2, 3, 4, 5, 6]) @map("days_of_week")
+
+  // Pauses the timed post while keeping the message and the schedule. This is
+  // also the rollback for the whole feature: no deploy, no data lost.
+  enabled Boolean @default(true)
+
+  // Audit: which admin last changed the message or the mention flags, and when.
+  // SetNull, not Cascade — removing an admin account must never delete the
+  // message the program posts every evening.
+  updatedById String? @map("updated_by_id")
+  updatedBy   User?   @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("announcement_templates")
+}
+
+// One send attempt. Also the once-per-day claim.
+model AnnouncementLog {
+  id String @id @default(uuid())
+
+  key String
+
+  announcementDate String @map("announcement_date") // YYYY-MM-DD, Asia/Dhaka
+
+  // Which attempt for that day this row is. Attempt 1 is the ordinary claim; a
+  // deliberate second post (`force: true`) takes the next number, which is what
+  // keeps "post twice on purpose" expressible without weakening the constraint
+  // that stops posting twice by accident.
+  attempt Int @default(1)
+
+  status  AnnouncementStatus
+  trigger AnnouncementTrigger
+
+  // The message exactly as it went out, placeholders already expanded. Stored
+  // rather than re-rendered later: the template changes, and an audit record of
+  // what students actually read must not change with it.
+  renderedMessage String @map("rendered_message") @db.Text
+
+  discordMessageId String? @map("discord_message_id")
+
+  // The mention targets that resolved, and the allowlist entries that did not —
+  // a member who left or a deleted role. Unresolved targets never block the
+  // post; a missing ping is worth far less than the message itself, but it must
+  // be visible somewhere other than the logs.
+  mentionedRoleIds  String[] @map("mentioned_role_ids")
+  mentionedUserIds  String[] @map("mentioned_user_ids")
+  unresolvedTargets String[] @map("unresolved_targets")
+
+  error String?
+
+  // The admin behind a MANUAL send; null for a SCHEDULED one. SetNull for the
+  // same reason as above — the history outlives the account.
+  triggeredById String? @map("triggered_by_id")
+  triggeredBy   User?   @relation(fields: [triggeredById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // The whole once-per-day guarantee. A read-then-write check does not survive
+  // two callers arriving in the same millisecond, and here the two callers are
+  // exactly the ones that will: a process restarting at 19:00, and an admin
+  // clicking Send while cron fires. Same reasoning as
+  // `@@unique([memberId, attendanceDate])`.
+  @@unique([key, announcementDate, attempt])
+  @@index([key, announcementDate])
+  @@map("announcement_logs")
+}

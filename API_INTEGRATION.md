@@ -22,7 +22,9 @@ Everything below was read out of the source (`src/modules/**`, `src/middlewares/
    - [8.4 Schedule — `/api/schedule`](#84-schedule--apischedule)
    - [8.5 Reminders — `/api/reminders`](#85-reminders--apireminders)
    - [8.6 Attendance (public) — `/api/attendance`](#86-attendance-public--apiattendance)
-   - [8.7 Root](#87-root)
+   - [8.7 Attendance announcement — `/api/announcement`](#87-attendance-announcement--apiannouncement)
+   - [8.8 Daily status — `/api/daily-status`](#88-daily-status--apidaily-status)
+   - [8.9 Root](#89-root)
 9. [Rate limits](#9-rate-limits)
 10. [Caching and revalidation strategy per endpoint](#10-caching-and-revalidation-strategy-per-endpoint)
 11. [Live progress without SSE](#11-live-progress-without-sse)
@@ -435,6 +437,117 @@ export type ChannelToggleResult = {
   announced: boolean;
 };
 
+// ── Attendance announcement ─────────────────────────────────────────────
+export type AnnouncementPlaceholder =
+  | '{{date}}'
+  | '{{close_time}}'
+  | '{{daily_update_channel_id}}'
+  | '{{attendance_form_link}}'
+  | '{{termination_day}}';
+
+export type ResolvedMentions = {
+  roleIds: string[];
+  userIds: string[];
+  /** Entries that no longer resolve, as `role:<id>` / `user:<handle>`. */
+  unresolved: string[];
+};
+
+export type AnnouncementAttemptStatus = 'SENDING' | 'POSTED' | 'FAILED';
+
+export type AnnouncementAttempt = {
+  attempt: number;
+  status: AnnouncementAttemptStatus;
+  trigger: 'SCHEDULED' | 'MANUAL';
+  discordMessageId: string | null;
+  unresolvedTargets: string[];
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AnnouncementDispatchResult =
+  | {
+      status: 'posted';
+      announcementDate: string;
+      attempt: number;
+      messageId: string;
+      unresolvedTargets: string[];
+    }
+  | {
+      status: 'already-sent';
+      announcementDate: string;
+      attempt: number;
+      postedAt: string;
+    }
+  | { status: 'disabled' }
+  | {
+      status: 'failed';
+      announcementDate: string;
+      error: string;
+      missingPermission: boolean;
+      notConnected: boolean;
+    };
+
+export type AnnouncementPayload = {
+  template: {
+    body: string; // placeholders NOT expanded
+    terminationDays: number;
+    mentionEveryone: boolean;
+    mentionRoleIds: string[];
+    mentionUsernames: string[];
+    updatedAt: string;
+    updatedBy: { id: string; name: string; email: string } | null;
+  };
+  schedule: {
+    announceTime: string; // "HH:mm"
+    daysOfWeek: number[]; // 0 = Sunday … 6 = Saturday
+    enabled: boolean;
+    timezone: 'Asia/Dhaka'; // reported, never sent
+  };
+  preview: {
+    content: string; // exactly what would be posted right now
+    length: number;
+    limit: 2000;
+    closeTime: string; // read from the #daily-update schedule
+    mentions: ResolvedMentions;
+  };
+  supportedPlaceholders: AnnouncementPlaceholder[];
+  scheduler: {
+    processEnabled: boolean;
+    running: boolean;
+    nextRunAt: string | null;
+    lastOutcome: {
+      ranAt: string;
+      trigger: 'SCHEDULED' | 'MANUAL';
+      result: AnnouncementDispatchResult;
+    } | null;
+  };
+  channel: { id: string | null };
+  today: {
+    date: string; // YYYY-MM-DD, Dhaka
+    posted: boolean;
+    attempts: AnnouncementAttempt[];
+  };
+};
+
+export type AnnouncementPreview = {
+  content: string;
+  length: number;
+  limit: 2000;
+  withinLimit: boolean;
+  closeTime: string;
+  mentions: ResolvedMentions;
+  supportedPlaceholders: AnnouncementPlaceholder[];
+};
+
+export type AnnouncementSendResult = {
+  announcementDate: string;
+  attempt: number;
+  discordMessageId: string;
+  unresolvedTargets: string[];
+  channelId: string | null;
+};
+
 // ── Reminders ───────────────────────────────────────────────────────────
 export type ReminderStatus =
   'PENDING' | 'PROCESSING' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
@@ -548,6 +661,58 @@ export type SubmitAttendancePayload = {
   attendanceDate: string;
   submittedAt: string;
   member: VerifiedMember;
+};
+
+export type AttendanceWindowPayload = {
+  isOpen: boolean;
+  date: string;
+  openTime: string;
+  closeTime: string;
+  daysOfWeek: number[];
+  enabled: boolean;
+  timezone: string;
+  nextOpenAt: string | null;
+  closesAt: string | null;
+};
+
+// ── Daily Status ──────────────────────────────────────────────────────────
+export type DailyStatus =
+  | 'COMPLETE'
+  | 'MISSING_UPDATE'
+  | 'MISSING_ATTENDANCE'
+  | 'MISSING_BOTH';
+
+export type DailyStatusCounts = {
+  date: string;
+  totalMembers: number;
+  attendanceSubmitted: number;
+  dailyUpdateSubmitted: number;
+  bothComplete: number;
+  missingUpdateOnly: number;
+  missingAttendanceOnly: number;
+  missingBoth: number;
+};
+
+export type DailyStatusRow = {
+  memberId: string;
+  discordUserId: string;
+  discordUsername: string;
+  displayName: string | null;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  hasAttendance: boolean;
+  hasDailyUpdate: boolean;
+  status: DailyStatus;
+  attendanceSubmittedAt: string | null;
+};
+
+export type MemberDailyStatus = DailyStatusRow & {
+  messages: Array<{
+    id: string;
+    content: string;
+    postedAt: string;
+  }>;
 };
 ```
 
@@ -1516,12 +1681,43 @@ Queue and worker health. No parameters.
 
 ### 8.6 Attendance (public) — `/api/attendance`
 
-🔓 **The only two routes in the application with no `auth()` middleware.** Students are not `users` rows, so there is no credential the form could present. What replaces authentication:
+🔓 **The only three routes in the application with no `auth()` middleware.** Students are not `users` rows, so there is no credential the form could present. What replaces authentication:
 
-1. The handle must resolve to a member with `isInGuild: true`.
+1. For `/verify-user` and `/submit`: the handle must resolve to a member with `isInGuild: true`.
 2. Per-IP rate limits (§9).
 
-Both checks re-run on the write path — `submit` never trusts that `verify-user` was called.
+Both membership checks re-run on the write path — `submit` never trusts that `verify-user` was called. `/window` exposes only the schedule submission window (no member data) and is rate limited.
+
+#### 🔓 `GET /api/attendance/window`
+
+Returns the current attendance submission window projection.
+
+**No parameters.** Always **200** — this is a routine status query for the public form.
+
+> `isOpen` is computed purely from the stored schedule row (`openTime`, `closeTime`, `daysOfWeek`, `enabled`) and the current Asia/Dhaka clock. It is **never** read from the live Discord channel permission overwrite, guaranteeing zero Discord API calls under high traffic. An admin locking the Discord channel manually will not affect `isOpen`.
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Attendance window retrieved successfully",
+  "data": {
+    "isOpen": true,                               // whether the window is open right now
+    "date": "2026-08-18",                         // today's Asia/Dhaka civil date
+    "openTime": "18:00",                          // HH:mm, Asia/Dhaka
+    "closeTime": "23:59",                         // HH:mm, Asia/Dhaka
+    "daysOfWeek": [0, 1, 2, 3, 4, 5, 6],          // 0=Sunday..6=Saturday
+    "enabled": true,                              // false = paused (window never opens)
+    "timezone": "Asia/Dhaka",                     // reported timezone constant
+    "nextOpenAt": "2026-08-19T12:00:00.000Z",     // next future opening instant (null when enabled: false)
+    "closesAt": "2026-08-18T17:59:00.000Z"        // closing instant for currently open window (null when isOpen: false)
+  }
+}
+```
+
+- **`nextOpenAt`** is reported even while the window is currently open (naming the *next* occurrence). It is `null` only when `enabled` is `false`.
+- **`closesAt`** is populated only when `isOpen` is `true`; otherwise it is `null`.
+- The response carries **no admin-shaped fields**: no `updatedBy`, no `scheduler`, no `lastRun`, and no Discord channel or guild ID.
 
 #### 🔓 `GET /api/attendance/verify-user?username=…`
 
@@ -1603,7 +1799,301 @@ The 409 is enforced by a database unique constraint (`(memberId, attendanceDate)
 
 ---
 
-### 8.7 Root
+### 8.7 Attendance announcement — `/api/announcement`
+
+All routes 🔐. This is the evening message posted into `#attendance` — the one that tells ~5,000 students to submit. Nothing here is student-facing, unlike §8.6.
+
+Two things make this section different from the schedule in §8.4: the message body is **admin-editable free text**, and the send can **mention the whole guild**. Both are covered below.
+
+#### 🔐 `GET /api/announcement/attendance`
+
+No parameters. The row is created lazily on first read (the current Bangla message, 19:00, all seven days, enabled, nothing mentioned), so this never 404s.
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Attendance announcement retrieved successfully",
+  "data": {
+    "template": {
+      "body": "Date: {{date}}\nসবাই রাত {{close_time}} …",
+      "terminationDays": 3,
+      "mentionEveryone": false,
+      "mentionRoleIds": [],
+      "mentionUsernames": [],
+      "updatedAt": "…",
+      "updatedBy": { "id": "…", "name": "Rakib", "email": "…" },
+    },
+    "schedule": {
+      "announceTime": "19:00",
+      "daysOfWeek": [0, 1, 2, 3, 4, 5, 6],
+      "enabled": true,
+      "timezone": "Asia/Dhaka",
+    },
+    "preview": {
+      "content": "Date: 2026-08-18\nসবাই রাত 23:59 … <#1466…>",
+      "length": 537,
+      "limit": 2000,
+      "closeTime": "23:59",
+      "mentions": { "roleIds": [], "userIds": [], "unresolved": [] },
+    },
+    "supportedPlaceholders": ["{{date}}", "{{close_time}}", "…"],
+    "scheduler": {
+      "processEnabled": true,
+      "running": true,
+      "nextRunAt": "2026-08-18T13:00:00.000Z",
+      "lastOutcome": null,
+    },
+    "channel": { "id": "1467526520347037729" },
+    "today": { "date": "2026-08-18", "posted": false, "attempts": [] },
+  },
+}
+```
+
+- **`template.body` is the raw text with placeholders unexpanded — that is what the editor binds to.** `preview.content` is the same body rendered against today's live values plus the mention line, i.e. exactly what students would read. Never show `preview.content` in an editable field; a round-trip would bake today's date into the stored template.
+- **`preview.closeTime` is read from the `#daily-update` schedule** (§8.4), not stored here. Changing the close time there changes this message without anyone editing it. That is the whole point — don't offer a close-time field on this screen.
+- `today.posted` and `today.attempts` are how you show "sent today ✓". An attempt stuck in `SENDING` means a crash between the claim and the post; a forced send (below) recovers it.
+- **`scheduler.lastOutcome` is where a missing `Send Messages` permission shows up.** Surface it — the only other symptom is a channel that quietly stops being announced in.
+- There is deliberately **no boot reconcile**: a missed announcement is never posted late. If `today.posted` is false after `nextRunAt` has passed, that day needs a manual send.
+- Costs no Discord API call for the channel state (unlike §8.4), but it **does** resolve mention targets, so don't poll it tightly.
+
+#### 🔐 `PATCH /api/announcement/attendance`
+
+**Body** — a patch; every field optional, but **an empty object is rejected (400)**.
+
+| Field              | Type     | Rules                                                               |
+| ------------------ | -------- | ------------------------------------------------------------------- |
+| `body`             | string   | non-empty; only the supported placeholders                          |
+| `terminationDays`  | number   | integer 1–365                                                       |
+| `mentionEveryone`  | boolean  | see the warning below                                               |
+| `mentionRoleIds`   | string[] | each a 17–20 digit snowflake, no duplicates; `[]` clears            |
+| `mentionUsernames` | string[] | Discord handles, normalized server-side, no duplicates; `[]` clears |
+| `announceTime`     | string   | 24-hour `HH:mm`, `00:00`–`23:59`                                    |
+| `daysOfWeek`       | number[] | ≥ 1 entry, each 0–6 (0 = Sunday), no duplicates                     |
+| `enabled`          | boolean  | pauses the timed post, keeps everything else                        |
+
+Do **not** send `timezone` — Zod strips it silently; the zone is fixed.
+
+**Two service-level 400s (not from Zod, so the message arrives un-Title-Cased and is safe to show verbatim):**
+
+1. **Unknown placeholder.** `{{attendance_link}}` in the body →
+   `Unknown placeholder(s): {{attendance_link}}. Supported placeholders are {{date}}, {{close_time}}, {{daily_update_channel_id}}, {{attendance_form_link}}, {{termination_day}}.`
+   Render `supportedPlaceholders` as click-to-insert chips and this becomes hard to hit.
+2. **Too long once rendered.** The check measures the **rendered** message plus the mention line against Discord's 2,000 characters, not the raw body. A body that looks short can still fail once placeholders expand and twelve role pings are appended. Show `preview.length / preview.limit` live as they type — the counter must be driven by the preview, not by `body.length`.
+
+> ⚠️ **`mentionEveryone: true` pings every member of the guild, every evening, until it is turned off.** It is the only way the announcement can notify the whole server — a literal `@everyone` typed into `body` is inert, because `allowedMentions` is built from these fields alone and never parsed from the text. Put this behind an explicit confirmation that names the member count, and show it prominently on the read screen. The admin who set it is recorded in `template.updatedBy`.
+
+**200** → the same payload shape as `GET`, already reflecting the change. Changing `announceTime`, `daysOfWeek`, or `enabled` rebuilds the cron task in-process; no restart needed. A reload failure does **not** fail the request (the row is saved) — it surfaces under `scheduler` on the next read.
+
+```ts
+// actions/announcement.ts
+'use server';
+import { revalidatePath } from 'next/cache';
+import { api, ApiError } from '@/lib/api/client';
+import type { AnnouncementPayload } from '@/lib/api/types';
+
+export async function updateAnnouncement(input: {
+  body?: string;
+  terminationDays?: number;
+  mentionEveryone?: boolean;
+  mentionRoleIds?: string[];
+  mentionUsernames?: string[];
+  announceTime?: string;
+  daysOfWeek?: number[];
+  enabled?: boolean;
+}) {
+  try {
+    const data = await api<AnnouncementPayload>('/announcement/attendance', {
+      method: 'PATCH',
+      body: input,
+    });
+    revalidatePath('/dashboard/announcement');
+    return { data };
+  } catch (error) {
+    if (error instanceof ApiError) return { error: error.message };
+    throw error;
+  }
+}
+```
+
+Build the schedule half as a time picker + weekday checkboxes. **Never expose a cron field** — same rule as §8.4.
+
+#### 🔐 `POST /api/announcement/attendance/preview`
+
+**Body** — `{ body?: string, terminationDays?: number }`. Both optional; omit everything to preview what is stored.
+
+Renders against today's live values and **stores nothing**. Use it for the live preview pane while an admin types (debounce it — it resolves mention targets on each call).
+
+**200** → `data: AnnouncementPreview`. Rejects an unknown placeholder with the same 400 as `PATCH`, so the editor can show the error before anyone saves.
+
+#### 🔐 `POST /api/announcement/attendance/send`
+
+**Body** — `{ force?: boolean }` (defaults to `false`).
+
+Posts **immediately**, leaving the stored schedule untouched. Works on every process, including one where `SCHEDULER_ENABLED=false`.
+
+**200** → `data: AnnouncementSendResult`.
+
+| Status | Cause                                                                                              |
+| ------ | -------------------------------------------------------------------------------------------------- |
+| 409    | today is already posted — the message names the earlier post's time and attempt                    |
+| 403    | the bot lacks `Send Messages` on the attendance channel — the failure does **not** consume the day |
+| 503    | the bot is not connected, or Discord refused the message for another reason                        |
+
+- **At most one post per Dhaka day**, enforced by a database claim rather than by timing — a double-clicked button gets the 409, not a second message. `{ "force": true }` is the only way to post twice in one day and files the second one as the next `attempt`.
+- **A failed send does not consume the day.** After fixing a permission, retry plainly; no `force` needed.
+- This is **outward-facing and irreversible** — potentially a mass mention to thousands of students. Put it behind a confirmation dialog that shows `preview.content` and, when `mentionEveryone` is on, says so explicitly.
+
+---
+
+### 8.8 Daily status — `/api/daily-status`
+
+All routes 🔐. These endpoints feed the admin daily status dashboard, member status table, member history dialog, and CSV export.
+
+#### 🔐 `GET /api/daily-status/counts?date=YYYY-MM-DD`
+
+Summary overview figures for a given Asia/Dhaka civil date.
+
+| Query  | Type   | Rules                                           |
+| ------ | ------ | ----------------------------------------------- |
+| `date` | string | **required**, `YYYY-MM-DD`, valid calendar date |
+
+**200**
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Daily status counts retrieved successfully",
+  "data": {
+    "date": "2026-08-18",
+    "totalMembers": 5187,
+    "attendanceSubmitted": 4320,
+    "dailyUpdateSubmitted": 3000,
+    "bothComplete": 2800,
+    "missingUpdateOnly": 1520,
+    "missingAttendanceOnly": 200,
+    "missingBoth": 667
+  }
+}
+```
+
+- Every count is guaranteed to be a JSON **number**, not a bigint.
+- Invariant: `bothComplete + missingUpdateOnly + missingAttendanceOnly + missingBoth === totalMembers`.
+- **Past dates work.** The frontend 7-day trend chart calls this endpoint 7 times in parallel for historical days.
+
+#### 🔐 `GET /api/daily-status?date=YYYY-MM-DD&page=1&limit=50&status=&search=`
+
+Paginated list of active guild members and their attendance/daily update status for a given date.
+
+| Query    | Type   | Rules                                                                                  |
+| -------- | ------ | -------------------------------------------------------------------------------------- |
+| `date`   | string | **required**, `YYYY-MM-DD`, valid calendar date                                        |
+| `page`   | number | optional, integer ≥ 1, default `1`                                                     |
+| `limit`  | number | optional, integer 1–200, default `50`                                                  |
+| `status` | enum   | optional: `COMPLETE` \| `MISSING_UPDATE` \| `MISSING_ATTENDANCE` \| `MISSING_BOTH`     |
+| `search` | string | optional, case-insensitive partial search on name, phone, email, or `discordUsername`  |
+
+`status` and `search` combine (AND), applied before pagination.
+
+**200**
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Daily status retrieved successfully",
+  "meta": {
+    "page": 1,
+    "limit": 50,
+    "total": 1520
+  },
+  "data": [
+    {
+      "memberId": "cm1234567890",
+      "discordUserId": "123456789012345678",
+      "discordUsername": "rakib_dev",
+      "displayName": "Rakib",
+      "name": "Rakibul Hasan",
+      "email": "rakib@example.com",
+      "phone": "01711000000",
+      "hasAttendance": true,
+      "hasDailyUpdate": false,
+      "status": "MISSING_UPDATE",
+      "attendanceSubmittedAt": "2026-08-18T14:22:31.000Z"
+    }
+  ]
+}
+```
+
+- `meta.total` is the **filtered** row count (matching the active search/status filters), driving the UI pager.
+
+#### 🔐 `GET /api/daily-status/members/:memberId?date=YYYY-MM-DD`
+
+Detailed status for a specific member on a given date, including their posted `#daily-update` messages.
+
+| Param      | Type   | Rules                                           |
+| ---------- | ------ | ----------------------------------------------- |
+| `memberId` | string | **required**, member CUID/ID                    |
+| `date`     | string | **required**, `YYYY-MM-DD`, valid calendar date |
+
+**200**
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Member daily status retrieved successfully",
+  "data": {
+    "memberId": "cm1234567890",
+    "discordUserId": "123456789012345678",
+    "discordUsername": "rakib_dev",
+    "displayName": "Rakib",
+    "name": "Rakibul Hasan",
+    "email": "rakib@example.com",
+    "phone": "01711000000",
+    "hasAttendance": true,
+    "hasDailyUpdate": true,
+    "status": "COMPLETE",
+    "attendanceSubmittedAt": "2026-08-18T14:22:31.000Z",
+    "messages": [
+      {
+        "id": "cmupdate123",
+        "content": "Today I implemented the public window endpoint.",
+        "postedAt": "2026-08-18T18:40:12.000Z"
+      }
+    ]
+  }
+}
+```
+
+- `messages: []` when no messages were posted on that date.
+- **404** if `memberId` is not found.
+
+#### 🔐 `GET /api/daily-status/export?date=YYYY-MM-DD&status=&search=&format=csv`
+
+Exports filtered daily status rows as a direct file attachment.
+
+| Query    | Type   | Rules                                           |
+| -------- | ------ | ----------------------------------------------- |
+| `date`   | string | **required**, `YYYY-MM-DD`, valid calendar date |
+| `status` | enum   | optional, same filter as table                  |
+| `search` | string | optional, same search as table                  |
+| `format` | string | optional, `csv` (default)                       |
+
+**200** (File attachment)
+
+```
+Content-Type: text/csv; charset=utf-8
+Content-Disposition: attachment; filename="daily-status-2026-08-18.csv"
+```
+
+- Streams batches of rows to support exporting thousands of members without memory exhaustion.
+- Escapes spreadsheet formula injection by prepending `'` to values starting with `=`, `+`, `-`, or `@`.
+
+---
+
+### 8.9 Root
 
 `GET /` → `Hello, World!` (plain text, not the envelope). Usable as a liveness probe. There is **no** `/api/health` endpoint.
 
@@ -1613,6 +2103,7 @@ The 409 is enforced by a database unique constraint (`(memberId, attendanceDate)
 
 | Endpoint                          | Budget | Window | Applies to |
 | --------------------------------- | ------ | ------ | ---------- |
+| `GET /api/attendance/window`      | 60     | 1 min  | per IP     |
 | `GET /api/attendance/verify-user` | 60     | 1 min  | per IP     |
 | `POST /api/attendance/submit`     | 5      | 15 min | per IP     |
 
@@ -1634,17 +2125,24 @@ Frontend implications:
 
 `fetch` is uncached by default in Next 16, which is the right default here — almost everything on this dashboard is operational state. Use `use cache` sparingly.
 
-| Endpoint                        | Strategy                                             | Why                                        |
-| ------------------------------- | ---------------------------------------------------- | ------------------------------------------ |
-| `GET /users/me`                 | `no-store` + React `cache()` per render              | `lastActiveAt` changes on every request    |
-| `GET /discord/sync/status`      | `no-store`, client-poll 5 s while `lastSync.running` | live counters                              |
-| `GET /schedule/daily-update`    | `no-store` **always**                                | `channel.isOpen` is a live Discord read    |
-| `GET /reminders`                | `no-store`; `revalidatePath` after send/cancel       | short list, cheap                          |
-| `GET /reminders/:id`            | `no-store`, poll 2–3 s while `PENDING`/`PROCESSING`  | see §11                                    |
-| `GET /reminders/:id/recipients` | `no-store`; refetch on page change                   | paginated audit                            |
-| `GET /reminders/status`         | `no-store`, poll 10 s on the reminders page          | queue health                               |
-| `GET /reminders/targets`        | `no-store`                                           | the preview must match what `send` will do |
-| `GET /attendance/verify-user`   | `no-store`, client-side, debounced                   | membership changes minute to minute        |
+| Endpoint                        | Strategy                                             | Why                                          |
+| ------------------------------- | ---------------------------------------------------- | -------------------------------------------- |
+| `GET /users/me`                 | `no-store` + React `cache()` per render              | `lastActiveAt` changes on every request      |
+| `GET /discord/sync/status`      | `no-store`, client-poll 5 s while `lastSync.running` | live counters                                |
+| `GET /schedule/daily-update`    | `no-store` **always**                                | `channel.isOpen` is a live Discord read      |
+| `GET /reminders`                | `no-store`; `revalidatePath` after send/cancel       | short list, cheap                            |
+| `GET /reminders/:id`            | `no-store`, poll 2–3 s while `PENDING`/`PROCESSING`  | see §11                                      |
+| `GET /reminders/:id/recipients` | `no-store`; refetch on page change                   | paginated audit                              |
+| `GET /reminders/status`         | `no-store`, poll 10 s on the reminders page          | queue health                                 |
+| `GET /reminders/targets`        | `no-store`                                           | the preview must match what `send` will do   |
+| `GET /attendance/window`        | `no-store`, client-side, on form mount               | submission window changes with schedule/time |
+| `GET /attendance/verify-user`   | `no-store`, client-side, debounced                   | membership changes minute to minute          |
+| `GET /daily-status/counts`      | `no-store`                                           | live aggregation for date                    |
+| `GET /daily-status`             | `no-store`; refetch on filter/search/page change     | paginated daily status table                 |
+| `GET /daily-status/members/:id` | `no-store`                                           | member messages and status                   |
+| `GET /daily-status/export`      | `no-store` (direct file download)                    | CSV export                                   |
+| `GET /announcement/attendance`  | `no-store`; `revalidatePath` after save/send         | `preview` and `today.posted` must be current |
+| `POST /announcement/…/preview`  | `no-store`, client-side, debounced ≥ 500 ms          | resolves mention targets on every call       |
 
 Mutations should `revalidatePath` the pages they affect, or `revalidateTag` if you tag reads. After a Server Action that only needs the client router refreshed (no tagged data), `refresh()` from `next/cache` is enough.
 
@@ -1919,12 +2417,9 @@ Form rules worth encoding:
 
 Nothing below exists on the backend today. Do not build a frontend against these paths — they will 404 with `API Not Found!`.
 
-- **The dashboard aggregation endpoints.** `dailyStatusRepository.getDailyStatusPage()` and `getDailyStatusCounts()` are written and tested in the repository layer, but no module exposes them over HTTP. There is no way to fetch per-member daily status (`COMPLETE` / `MISSING_UPDATE` / `MISSING_ATTENDANCE` / `MISSING_BOTH`), the seven overview counts, search/sort/filter, or the user-detail view.
 - **The SSE progress stream** that would wrap the reminder progress read. Poll `GET /api/reminders/:id` instead (§11).
-- **Any export endpoint** (CSV/Excel).
 - **Admin user management** (create/list/suspend admins). Admins are seeded via `bun run seed`.
-
-When the dashboard endpoints land, the seven overview figures will come from `getDailyStatusCounts` **only** — they interlock and must agree, so don't assemble a "quick count" on the frontend from the reminder targets list or anywhere else.
+- **XLSX export format** (`GET /api/daily-status/export?format=xlsx` returns 501 Not Implemented; use `format=csv`).
 
 ---
 
@@ -1949,8 +2444,14 @@ Print this next to the monitor.
 - [ ] `PATCH /schedule/daily-update` rejects an empty body, and validates `closeTime > openTime` against the **merged** result — mirror that check client-side.
 - [ ] Never expose a cron input for the schedule; times + weekday checkboxes only.
 - [ ] `POST /schedule/daily-update/open|lock` posts an announcement embed to a channel thousands of students read. Confirm first.
+- [ ] Bind the announcement editor to `template.body` (placeholders intact), **never** to `preview.content` — a round-trip would bake today's date into the stored message.
+- [ ] Drive the announcement character counter from `preview.length`, not `body.length`: the 2,000 limit is checked on the **rendered** message plus the mention line.
+- [ ] `mentionEveryone: true` pings the whole guild every evening until turned off. Confirm explicitly and show it on the read screen; a literal `@everyone` typed into the body is inert.
+- [ ] `POST /announcement/attendance/send` is a mass mention and irreversible. Second send today is a **409**; `{ "force": true }` is the only way past it.
+- [ ] Don't offer a close-time field on the announcement screen — `{{close_time}}` is read from the `#daily-update` schedule so the two can never disagree.
+- [ ] The announcement has **no boot reconcile**: if `today.posted` is false after `nextRunAt` passed, that day needs a manual send.
 - [ ] Debounce `verify-user` at 500 ms and abort stale requests — the budget is 60/min per IP.
 - [ ] Don't auto-retry `POST /submit` — 5 per 15 min per IP is the entire budget.
-- [ ] Surface `dailyUpdate.ingestionEnabled === false`, `lastSync.guardTripped`, `scheduler.lastRun.error`, and `lastFallback.missingPermission` — each is an otherwise-invisible outage.
+- [ ] Surface `dailyUpdate.ingestionEnabled === false`, `lastSync.guardTripped`, `scheduler.lastRun.error`, `lastFallback.missingPermission`, and the announcement's `scheduler.lastOutcome` — each is an otherwise-invisible outage.
 - [ ] `DM_CLOSED` is not a failure; label it "DMs closed — mentioned in channel".
 - [ ] A `CANCELLED` broadcast's `outstanding` recipients were **never attempted**, not failed.

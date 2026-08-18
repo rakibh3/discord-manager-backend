@@ -34,6 +34,11 @@ model User {
   // Channel schedules this admin last edited. Audit only, and nullable on the
   // other side: deleting the account must not take the schedule with it.
   channelSchedules ChannelSchedule[]
+  // The announcement template this admin last edited, and the manual sends they
+  // triggered. Audit only, nullable on the other side for the same reason — the
+  // message the program posts every evening must outlive the account.
+  announcementTemplates AnnouncementTemplate[]
+  announcementLogs      AnnouncementLog[]
 
   @@map("users")
 }

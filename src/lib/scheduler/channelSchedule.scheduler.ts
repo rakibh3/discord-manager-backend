@@ -10,6 +10,7 @@ import {
   channelScheduleRepository,
   type TChannelScheduleWithEditor,
 } from '@/repositories/channelSchedule.repository';
+import { buildCronExpression } from '@/utils/cron';
 import {
   DHAKA_TIMEZONE,
   getDhakaTimeOfDay,
@@ -62,21 +63,6 @@ const describeError = (error: unknown): string =>
 
 export const recordRun = (run: TLastRun): void => {
   lastRun = run;
-};
-
-/**
- * `<mm> <HH> * * <days>` — minute and hour from the stored `HH:mm`, weekdays
- * straight from `daysOfWeek`, which already uses cron's own 0-6 numbering.
- * Never stored; always derived, so the stored value stays the single source of
- * truth and an admin never sees a cron string.
- */
-export const buildCronExpression = (
-  time: string,
-  daysOfWeek: number[],
-): string => {
-  const [hour, minute] = time.split(':');
-
-  return `${Number(minute)} ${Number(hour)} * * ${[...daysOfWeek].sort((a, b) => a - b).join(',')}`;
 };
 
 /**
