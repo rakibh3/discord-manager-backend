@@ -8,9 +8,15 @@ import { sendResponse } from '@/utils/sendResponse';
 // submitted today? Always 200 — "not found" is a routine answer the form has to
 // render, not a failure. `verified` and `alreadySubmitted` sit inside `data`
 // because `sendResponse` owns the envelope; the PID sketches them top-level.
+//
+// The optional `email` query parameter is passed through to the service so
+// the already-submitted answer is restricted to the email+handle combination
+// the form is actually rendering. With the email absent, the prior handle-only
+// behaviour applies.
 const verifyUser = catchAsync(async (req, res) => {
   const result = await attendanceService.verifyUser(
     req.query.username as string,
+    typeof req.query.email === 'string' ? req.query.email : null,
   );
 
   sendResponse(res, {

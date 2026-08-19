@@ -91,16 +91,19 @@ export const verifyEmailRateLimiter = rateLimit({
 
 /**
  * A legitimate student submits once per day. The only reasons to send more are a
- * failed network request or a correction after a validation error, so 5 per
+ * failed network request or a correction after a validation error, so 2 per
  * 15 minutes covers every honest case with room to spare and stops a scripted
  * flood after a handful of attempts.
  *
  * Materially tighter than verification because this is the endpoint that writes.
+ * Tighter than the previous 5/15min so an attacker who has resolved the roster
+ * gate and the membership check still finds the per-IP budget exhausted after
+ * two legitimate retries, not five.
  */
 export const submitAttendanceRateLimiter = rateLimit({
   ...publicLimiterDefaults,
   windowMs: 15 * 60 * 1000,
-  limit: 5,
+  limit: 2,
   handler: throttled(
     'Too many attendance submissions from this device. Please wait a few minutes and try again.',
   ),

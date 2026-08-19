@@ -31,9 +31,21 @@ const discordUsernameField = (fieldLabel: string) =>
         'Enter a valid Discord username: 2-32 characters using only lowercase letters, numbers, underscore, or period. This is the name under the @ on your Discord profile, not your display name.',
     });
 
-/** `GET /api/attendance/verify-user?username=…` */
+/** `GET /api/attendance/verify-user?username=…&email=…` */
 const verifyUserQuerySchema = z.object({
   username: discordUsernameField('Discord username'),
+  /**
+   * Optional email. When supplied AND the email is enrolled and paired with
+   * a Discord account, the already-submitted answer is restricted to rows
+   * whose member belongs to that paired account. Mirrors the email rule on
+   * the submit endpoint so a malformed value is caught here the same way
+   * it would be caught there.
+   */
+  email: z
+    .string()
+    .trim()
+    .pipe(z.email({ error: 'Please provide a valid email address' }))
+    .optional(),
 });
 
 /**
@@ -56,58 +68,46 @@ const verifyEmailQuerySchema = z.object({
 /**
  * `POST /api/attendance/submit`
  *
- * Exactly the four fields from PID §3.1, plus one optional flag for
- * "I cannot enter my real Discord username". Zod strips anything else by
- * default, so extra keys are ignored rather than written.
+ * Exactly the two fields the form is allowed to carry — `email` and
+ * `discordUsername` — plus one optional flag for "I cannot enter my real
+ * Discord username". The student's `name` and `phone` are not collected by the
+ * form; the backend sources them from the matched active roster entry when
+ * roster enforcement is enabled, and writes empty strings when enforcement is
+ * off (see `attendance.service.ts`).
+ *
+ * `.strict()` refuses any extra key as a 400 naming the field. The default
+ * Zod behaviour strips unknown keys, which would silently accept a stale
+ * form still posting `name` / `phone` — and silently dropping what the form
+ * supplied is the failure mode this change exists to remove. A 400 surfaces
+ * the staleness to whoever is operating the form.
  */
-const submitAttendanceValidationSchema = z.object({
-  name: z
-    .string({ error: 'Full name is required' })
-    .trim()
-    .min(3, { error: 'Full name must be at least 3 characters' })
-    .max(100, { error: 'Full name must be at most 100 characters' })
-    // English-only by product decision. The message names the script, because
-    // "only letters" reads as nonsense to a student who just typed their own
-    // name in their own alphabet.
-    .regex(/^[A-Za-z\s]+$/, {
-      error: 'Full name must use English letters and spaces only',
-    }),
+const submitAttendanceValidationSchema = z
+  .object({
+    // Trimmed BEFORE the address check. A student pasting their email out of a
+    // chat message brings a trailing space with it, and `z.email()` on the raw
+    // value rejects that as malformed — handing them "Please Provide A Valid
+    // Email Address" for an address that is perfectly valid. The roster gate
+    // normalizes (trim + lowercase) before comparing, so padding never reaches
+    // the lookup either way; this only stops the form refusing it first.
+    email: z
+      .string({ error: 'Email address is required' })
+      .trim()
+      .pipe(z.email({ error: 'Please provide a valid email address' })),
 
-  // `01XXXXXXXXX`, `+8801XXXXXXXXX`, or `8801XXXXXXXXX`. The `1[3-9]` covers
-  // every operator prefix currently issued in Bangladesh (013-019).
-  phone: z
-    .string({ error: 'Phone number is required' })
-    .trim()
-    .regex(/^(?:\+?880|0)1[3-9]\d{8}$/, {
-      error:
-        'Enter a valid Bangladeshi mobile number, for example 01711000000 or +8801711000000',
-    }),
+    discordUsername: discordUsernameField('Discord username'),
 
-  // Trimmed BEFORE the address check. A student pasting their email out of a
-  // chat message brings a trailing space with it, and `z.email()` on the raw
-  // value rejects that as malformed — handing them "Please Provide A Valid
-  // Email Address" for an address that is perfectly valid. The roster gate
-  // normalizes (trim + lowercase) before comparing, so padding never reaches
-  // the lookup either way; this only stops the form refusing it first.
-  email: z
-    .string({ error: 'Email address is required' })
-    .trim()
-    .pipe(z.email({ error: 'Please provide a valid email address' })),
-
-  discordUsername: discordUsernameField('Discord username'),
-
-  // Strict boolean: any other value (a string, a number, an `undefined`
-  // that arrived as `"undefined"`) is a validation error naming the field.
-  // Zod's default `OPTIONAL` would silently coerce a missing key but
-  // reject a string, which is what we want: a missing key is `false`, a
-  // present-but-malformed value is a 400.
-  cannotEnterRealDiscordUsername: z
-    .boolean({
-      error:
-        'cannotEnterRealDiscordUsername must be true or false',
-    })
-    .optional(),
-});
+    // Strict boolean: any other value (a string, a number, an `undefined`
+    // that arrived as `"undefined"`) is a validation error naming the field.
+    // Zod's default `OPTIONAL` would silently coerce a missing key but
+    // reject a string, which is what we want: a missing key is `false`, a
+    // present-but-malformed value is a 400.
+    cannotEnterRealDiscordUsername: z
+      .boolean({
+        error: 'cannotEnterRealDiscordUsername must be true or false',
+      })
+      .optional(),
+  })
+  .strict();
 
 export const attendanceValidation = {
   verifyUserQuerySchema,

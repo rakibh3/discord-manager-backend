@@ -129,52 +129,37 @@ Along with the membership answer, the system SHALL report whether the verified m
 
 ### Requirement: Attendance submissions are validated field by field
 
-The system SHALL accept an attendance submission carrying exactly a full name, a phone number, an email address, and a Discord username, and SHALL reject the submission if any field is missing or malformed, reporting which fields failed.
+The system SHALL accept an attendance submission carrying exactly an email address and a Discord username (plus the optional `cannotEnterRealDiscordUsername` flag), and SHALL reject the submission if any accepted field is missing or malformed, reporting which fields failed. The system SHALL refuse any submission that carries `name` or `phone` as a validation error naming the field, because the system sources those values from the matched roster entry rather than from form input — silently accepting extra keys would let a stale form keep posting fields the API no longer reads.
 
-#### Scenario: All fields valid
+#### Scenario: Email and Discord username accepted
 
-- **WHEN** a submission carries a name of at least 3 characters using English letters and spaces only, a valid Bangladeshi mobile number, a well-formed email, and a valid Discord handle
+- **WHEN** a submission carries a well-formed email and a valid Discord handle
 - **THEN** field validation passes and the submission proceeds to membership verification
-
-#### Scenario: Name too short or containing digits
-
-- **WHEN** the full name is shorter than 3 characters, or contains anything other than English letters and spaces
-- **THEN** the submission is rejected as a validation error naming the field
-
-#### Scenario: Name in Bengali script
-
-- **WHEN** a student enters a name using Bengali characters (e.g. `রাকিবুল হাসান`)
-- **THEN** the submission is rejected with a message stating that the name must use English letters and spaces only
-
-#### Scenario: Name with only Bengali consonants
-
-- **WHEN** a student enters a name using only Bengali consonant characters (e.g. `রকব`)
-- **THEN** the submission is rejected, because non-Latin scripts are not accepted regardless of Unicode category
-
-#### Scenario: Name with digits
-
-- **WHEN** a student enters a name containing digits (e.g. `Rakib 2`)
-- **THEN** the submission is rejected as a validation error
-
-#### Scenario: Phone number in an accepted form
-
-- **WHEN** the phone number is given as `01711000000` or as `+8801711000000`
-- **THEN** it passes validation
-
-#### Scenario: Phone number malformed
-
-- **WHEN** the phone number does not match an accepted Bangladeshi mobile form
-- **THEN** the submission is rejected as a validation error naming the field
 
 #### Scenario: Email malformed
 
 - **WHEN** the email address is not a well-formed address
 - **THEN** the submission is rejected as a validation error naming the field
 
-#### Scenario: Unknown fields supplied
+#### Scenario: Discord handle malformed
 
-- **WHEN** a submission carries fields beyond the four accepted ones
-- **THEN** the extra fields are ignored and never written
+- **WHEN** the Discord handle does not match Discord's official username standard
+- **THEN** the submission is rejected as a validation error naming the field
+
+#### Scenario: Name field supplied
+
+- **WHEN** a submission carries a `name` field of any value, well-formed or otherwise
+- **THEN** the submission is rejected as a validation error naming the field, because the system sources the name from the matched roster entry
+
+#### Scenario: Phone field supplied
+
+- **WHEN** a submission carries a `phone` field of any value, well-formed or otherwise
+- **THEN** the submission is rejected as a validation error naming the field, because the system sources the phone from the matched roster entry
+
+#### Scenario: Other unknown fields supplied
+
+- **WHEN** a submission carries fields beyond `email`, `discordUsername`, and `cannotEnterRealDiscordUsername`
+- **THEN** the submission is rejected as a validation error naming the first unknown field
 
 ### Requirement: Submission independently enforces every rule
 
@@ -255,12 +240,6 @@ When roster enforcement is disabled, submission SHALL behave exactly as it did b
 - **WHEN** enforcement is disabled and a submission carries an address that no roster entry holds
 - **THEN** the roster is not consulted and the submission is accepted on the membership check alone
 
-#### Scenario: The roster never overwrites what was submitted
-
-- **WHEN** a submission is accepted against a roster entry whose stored name and phone number differ from the submitted ones
-- **THEN** the attendance record stores the name, phone number, and email address exactly as the student submitted them
-- **AND** the roster entry is left unchanged
-
 ### Requirement: The roster check adds no external call to the submission path
 
 The roster check SHALL be a single indexed database read on an exact normalized email address. It SHALL NOT issue a Discord API request, SHALL NOT read a spreadsheet, and SHALL NOT vary with the number of configured servers.
@@ -273,7 +252,7 @@ The roster check SHALL be a single indexed database read on an exact normalized 
 
 ### Requirement: An accepted submission records the day's attendance
 
-On accepting a submission, the system SHALL write one attendance record for **each** configured server in which the submitting handle is a current member, each owned by that server's member record, dated with the current Asia/Dhaka calendar date, retaining the name, phone, and email exactly as submitted. All of those writes SHALL succeed or fail together.
+On accepting a submission, the system SHALL write one attendance record for **each** configured server in which the submitting handle is a current member, each owned by that server's member record, dated with the current Asia/Dhaka calendar date. When roster enforcement is enabled, the attendance row SHALL carry the `name` and `phone` stored on the matched active roster entry and the email exactly as submitted. When roster enforcement is disabled, no roster entry is consulted and the attendance row SHALL carry empty-string `name` and `phone` values alongside the email exactly as submitted. All of those writes SHALL succeed or fail together.
 
 #### Scenario: Record written for today
 
@@ -293,11 +272,18 @@ On accepting a submission, the system SHALL write one attendance record for **ea
 - **WHEN** one of the per-server attendance writes fails
 - **THEN** none of them is committed, so the student is never left recorded in one server and silently missing in the other
 
-#### Scenario: Submitted details are retained verbatim
+#### Scenario: Roster-sourced contact details under enforcement
 
-- **WHEN** a submission is accepted
-- **THEN** the name, phone, and email stored on every attendance record written are the values the student submitted
-- **AND** a later submission with different details does not alter the earlier records
+- **WHEN** enforcement is enabled and a submission is accepted against a roster entry whose stored name and phone number are `Rakib Hasan` and `01711000000`
+- **THEN** the name `Rakib Hasan` and the phone `01711000000` are stored on every attendance record written
+- **AND** the email stored is the value the student submitted
+- **AND** the roster entry is left unchanged
+- **AND** a later submission does not alter the earlier day's name or phone (the roster is the source of truth, not the form)
+
+#### Scenario: Empty contact details when enforcement is disabled
+
+- **WHEN** enforcement is disabled and a submission carrying a well-formed email and a valid handle is accepted
+- **THEN** the attendance record stores the email exactly as submitted and stores empty strings for `name` and `phone`
 
 #### Scenario: Submission near the day boundary
 
@@ -307,23 +293,31 @@ On accepting a submission, the system SHALL write one attendance record for **ea
 
 ### Requirement: Contact details are carried onto the member directory entry
 
-On accepting a submission, the system SHALL save the submitted phone number and email address onto the member's directory entry **in every server the submission was recorded in**, so the dashboard can reach a member who has not submitted today whichever server it is looking at.
+On accepting a submission, the system SHALL save the submitted email address onto the member's directory entry **in every server the submission was recorded in**, so the dashboard can reach a member who has not submitted today whichever server it is looking at. The phone number on the directory entry SHALL be updated from the matched roster entry when roster enforcement is enabled, and SHALL be left unchanged when enforcement is disabled.
 
-#### Scenario: Member with no stored contact details
+#### Scenario: Email updates the directory under enforcement
 
-- **WHEN** a member whose directory entry has no phone or email submits attendance
-- **THEN** the submitted phone and email are stored on that entry
+- **WHEN** enforcement is enabled and a member whose directory entry has no email submits attendance
+- **THEN** the submitted email is stored on that entry
+- **AND** the matched roster entry's stored phone is stored on that entry
 
 #### Scenario: Member of two servers
 
 - **WHEN** a member of two configured servers submits
-- **THEN** both servers' directory entries carry the submitted phone and email
+- **THEN** both servers' directory entries carry the submitted email
+- **AND** when enforcement is enabled, both servers' directory entries carry the matched roster entry's stored phone
 
-#### Scenario: Member updates their details
+#### Scenario: Member updates their email on a later day
 
 - **WHEN** a member who previously submitted one email submits again on a later day with a different email
 - **THEN** the directory entries carry the newer email
 - **AND** the earlier day's attendance records still show the email submitted that day
+
+#### Scenario: Enforcement disabled leaves the directory phone unchanged
+
+- **WHEN** enforcement is disabled and a member submits attendance
+- **THEN** the directory entries carry the submitted email
+- **AND** the directory entries' existing phone values are left unchanged
 
 #### Scenario: Directory update and attendance write are atomic
 
@@ -361,7 +355,7 @@ The system SHALL refuse a submission when the submitting handle already has an a
 
 ### Requirement: The submission accepts an optional "I cannot enter my real Discord username" flag
 
-The system SHALL accept, on the public attendance submission, an optional flag indicating that the student cannot enter their real Discord username. The flag SHALL be carried alongside the four accepted fields and SHALL be ignored when its value is not a JSON boolean.
+The system SHALL accept, on the public attendance submission, an optional flag indicating that the student cannot enter their real Discord username. The flag SHALL be carried alongside the two accepted fields (`email` and `discordUsername`) and SHALL be ignored when its value is not a JSON boolean.
 
 The flag SHALL NOT be required. Submissions without it SHALL be processed exactly as they are today. The flag SHALL be rejected only when it is supplied with a non-boolean value.
 

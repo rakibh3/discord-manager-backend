@@ -149,6 +149,16 @@ const HANDLE_DOES_NOT_MATCH_PAIRING_REFUSAL_MESSAGE =
   HANDLE_DOES_NOT_MATCH_PAIRING_MESSAGE;
 
 /**
+ * The message a submission gets when the schedule is currently disabled or the
+ * current moment is outside the configured open/close window. Deliberately
+ * generic — never names the close time, never hints at the next open time —
+ * because revealing either would tell an anonymous caller the schedule they
+ * should not be probing.
+ */
+const ATTENDANCE_WINDOW_CLOSED_MESSAGE =
+  'The attendance submission window is currently closed. Please submit during the open window.';
+
+/**
  * The roster gate: does this email address belong to an enrolled person?
  *
  * Reads the stored setting FIRST, and when enforcement is off returns without
@@ -175,6 +185,33 @@ const assertEnrolled = async (rawEmail: string): Promise<void> => {
 
   if (!entry) {
     throw new AppError(httpStatus.FORBIDDEN, NOT_ENROLLED_MESSAGE);
+  }
+};
+
+/**
+ * The submission-window gate: is the schedule enabled AND is the current
+ * moment inside the configured open window?
+ *
+ * Runs as the FIRST check on `submitAttendance`. The schedule is a single-row
+ * read; the time comparison is in-process. Any caller outside the window is
+ * refused the write — the Discord channel state is a UX hint, not an
+ * enforcement boundary, and an anonymous POST can probe this service
+ * independently of whether the `#daily-update` channel is locked.
+ *
+ * Throws rather than returning a boolean so the caller cannot accidentally
+ * proceed when the gate fires. The explicit `schedule.enabled` check mirrors
+ * `getAttendanceWindow`: a disabled schedule means "the scheduler is off",
+ * which here means "the form never opens".
+ *
+ * One single-row read. No Discord call, no second clock source.
+ */
+const assertSubmissionWindowOpen = async (): Promise<void> => {
+  const schedule = await channelScheduleRepository.getOrCreateSchedule();
+
+  const open = schedule.enabled && isWithinWindow(schedule);
+
+  if (!open) {
+    throw new AppError(httpStatus.FORBIDDEN, ATTENDANCE_WINDOW_CLOSED_MESSAGE);
   }
 };
 
@@ -567,6 +604,14 @@ const submitAttendance = async (
   payload: TSubmitAttendancePayload,
 ): Promise<TSubmitAttendanceResult> => {
   const attendanceDate = getDhakaDate();
+
+  // The submission-window gate runs FIRST. The Discord channel's permission
+  // overwrite is a UX hint, not an enforcement boundary — an anonymous POST
+  // can probe this service independently of whether the `#daily-update` channel
+  // is locked. The gate is the only place a closed window actually rejects a
+  // write, and it has to run before any other check so a closed form never
+  // spends an index lookup on the roster.
+  await assertSubmissionWindowOpen();
 
   // The roster gate runs BEFORE membership resolution. It is one indexed read
   // against a local table, where resolution is a `findMany` followed — on

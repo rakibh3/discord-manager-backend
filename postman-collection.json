@@ -1197,7 +1197,7 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/attendance/verify-user?username={{attendanceUsername}}",
-            "description": "Live membership check backing the form's verified badge. The handle is normalized first (trimmed, leading @ stripped, lowercased), so ` @Rakib_Dev ` and `rakib_dev` resolve identically.\n\nReturns 200 with `data.verified` true/false - not 404 - because 'not found' is the routine answer the form has to render either way. `data.alreadySubmitted` reports whether this member already has an attendance row for today's Asia/Dhaka date, which `data.attendanceDate` names."
+            "description": "Live membership check backing the form's verified badge. The handle is normalized first (trimmed, leading @ stripped, lowercased), so ` @Rakib_Dev ` and `rakib_dev` resolve identically.\n\nReturns 200 with `data.verified` true/false - not 404 - because 'not found' is the routine answer the form has to render either way. `data.alreadySubmitted` reports whether this member already has an attendance row for today's Asia/Dhaka date, which `data.attendanceDate` names.\n\nAccepts an optional `email` query parameter. When supplied AND roster enforcement is on AND the email resolves to a paired roster entry, the `alreadySubmitted` answer is pairing-aware: only attendance rows whose member belongs to the paired account count as a duplicate for this email+handle combination. Without the email (or with the gate off), the prior handle-only behaviour applies. Pass the email from the form so the 'already submitted' badge matches the email the student actually typed."
           }
         },
         {
@@ -1269,6 +1269,60 @@
             "method": "GET",
             "url": "{{baseUrl}}/attendance/verify-user?username=rakib..dev",
             "description": "A format error is a 400 and a DIFFERENT outcome from 'not a member' (200, verified:false). The form needs to tell them apart to say anything useful.\n\nRejected: consecutive periods, anything outside [a-z0-9_.], under 2 or over 32 characters, discriminator tags like `#0001`.\n\nACCEPTED: a leading or trailing `_` or `.` - `itzazad_`, `.rabbil`, `shahriarratul.`. 115 of 2189 live members (5.3%) hold such handles. Never tighten the regex to forbid them."
+          }
+        },
+        {
+          "name": "Verify Discord Username - Pairing-Aware Duplicate Check",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Pairing-aware check still 200, not a hard error', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "});",
+                  "",
+                  "// The endpoint always answers the verification question in the same envelope shape",
+                  "// (verified / alreadySubmitted / member / servers). With the optional email supplied, the",
+                  "// alreadySubmitted field is restricted to the email+handle combination the form is rendering.",
+                  "pm.test('Response carries the verify-user payload', function () {",
+                  "    pm.expect(jsonData.data).to.have.property('verified');",
+                  "    pm.expect(jsonData.data).to.have.property('alreadySubmitted');",
+                  "    pm.expect(jsonData.data).to.have.property('attendanceDate');",
+                  "    pm.expect(jsonData.data).to.have.property('servers');",
+                  "});",
+                  "",
+                  "// A malformed email is a 400 (Zod), not a 200-with-false. The form must distinguish",
+                  "// 'fix your typing' from 'no such handle'.",
+                  "pm.test('Malformed email is NOT skipped', function () {",
+                  "    if (pm.request.url.query.get('email') === 'not-an-email') {",
+                  "        pm.response.to.have.status(400);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-user?username={{attendanceUsername}}&email={{attendanceEmail}}",
+            "description": "Pairing-aware duplicate check. When the optional `email` query parameter is supplied AND roster enforcement is on AND the email resolves to a paired roster entry, only attendance rows whose member belongs to the paired account count as a duplicate for this email+handle combination.\n\nWithout the email: the prior handle-only behaviour applies - any prior row for any resolved member counts as a duplicate.\n\nWith the email but enforcement off: the prior handle-only behaviour applies - the roster has no concept of pairings to consult.\n\nWith the email but the entry is unpaired: `alreadySubmitted` is false regardless of any prior rows. Without a recorded link, no prior row is attributable to this email.\n\nWith the email and the entry paired to a different account: `alreadySubmitted` is false for the submitted handle. The pairing-mismatch flow on the submit path remains the gate for the legitimate 'cannot enter my real Discord username' case.\n\nReplace `{{attendanceEmail}}` with `not-an-email` to verify the 400 path without disturbing the rest of the request."
           }
         },
         {
@@ -1500,14 +1554,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"{{attendanceEmail}}\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
+              "raw": "{\n  \"email\": \"{{attendanceEmail}}\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "Records today's attendance. Exactly four fields plus one optional flag; anything else is stripped.\n\nValidation: `name` >= 3 chars, letters and spaces only (Unicode, so Bengali names pass); `phone` as 01XXXXXXXXX or +8801XXXXXXXXX; `email` well-formed; `discordUsername` per the official Discord standard.\n\nMembership is re-verified here even if verify-user was called first. That endpoint is a UI affordance - nothing forces a client to call it, and a member can leave the guild between the two requests. Golden Rule 3 is enforced on this path, not in the browser.\n\n`cannotEnterRealDiscordUsername` is optional. The flag is consumed only when the entry is paired and the submitted handle differs from the recorded pairing: the submission is **NOT** recorded as today's attendance. Instead, an open mismatch report is filed for an administrator to review, and the response is 202 Accepted with `attendanceRecorded: false` and `reportQueued: true`. After the admin reassigns the pairing, the student's next submission goes through normally and is recorded as today. Unpaired entries are recorded as before; mismatched submissions without the flag are refused with 403. See /roster/discord-mismatch-reports for the admin surface.\n\nOn success the submitted phone and email are also carried onto the member's directory entry, in the same transaction as the insert."
+            "description": "Records today's attendance. Exactly two fields plus one optional flag; anything else is refused as a 400.\n\nValidation: `email` well-formed; `discordUsername` per the official Discord standard.\n\nThe form does not collect `name` or `phone` — those values are sourced from the matched active roster entry when roster enforcement is enabled (see /roster/settings), or recorded as empty strings when enforcement is disabled. Carrying `name` or `phone` on the body is a 400 naming the field, so a stale form is surfaced rather than silently dropping the extra keys.\n\nMembership is re-verified here even if verify-user was called first. That endpoint is a UI affordance - nothing forces a client to call it, and a member can leave the guild between the two requests. Golden Rule 3 is enforced on this path, not in the browser.\n\n`cannotEnterRealDiscordUsername` is optional. The flag is consumed only when the entry is paired and the submitted handle differs from the recorded pairing: the submission is **NOT** recorded as today's attendance. Instead, an open mismatch report is filed for an administrator to review, and the response is 202 Accepted with `attendanceRecorded: false` and `reportQueued: true`. After the admin reassigns the pairing, the student's next submission goes through normally and is recorded as today. Unpaired entries are recorded as before; mismatched submissions without the flag are refused with 403. See /roster/discord-mismatch-reports for the admin surface.\n\nOn success the submitted email is carried onto the member's directory entry, in the same transaction as the insert. Under roster enforcement, the matched entry's stored phone is also carried onto the directory; under unenforced enforcement, the directory's existing phone is left untouched."
           }
         },
         {
@@ -1552,7 +1606,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"{{attendanceEmail}}\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
+              "raw": "{\n  \"email\": \"{{attendanceEmail}}\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1601,7 +1655,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Ghost User\",\n  \"phone\": \"01711000000\",\n  \"email\": \"ghost@example.com\",\n  \"discordUsername\": \"definitely_not_a_member_9999\"\n}",
+              "raw": "{\n  \"email\": \"ghost@example.com\",\n  \"discordUsername\": \"definitely_not_a_member_9999\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

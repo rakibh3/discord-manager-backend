@@ -18,6 +18,13 @@ export type CreateAttendanceInput = {
   name: string;
   email: string;
   phone: string;
+  /**
+   * When set, the directory entry's `phone` is overwritten with this value
+   * inside the same transaction as the attendance insert. When `undefined`,
+   * the directory's `phone` is left untouched — used when the submission has
+   * no source-of-truth phone to write (e.g. roster enforcement is disabled).
+   */
+  directoryPhone?: string | null;
   /** `YYYY-MM-DD`, Asia/Dhaka. Derive with `getDhakaDate()`. */
   attendanceDate: string;
   status?: AttendanceStatus;
@@ -73,6 +80,13 @@ const createAttendanceWithMemberContact = async (
  * today's attendance are filtered out by the caller, so a student who joined a
  * second server after submitting gets the missing row written without the
  * existing one being touched.
+ *
+ * The directory's `email` is always overwritten with the submitted value —
+ * the email is the freshest signal we have for it. The directory's `phone`
+ * is only overwritten when `directoryPhone` is set on the input; when it is
+ * `undefined`, the directory's existing `phone` is left alone. This is how
+ * the unenforced-enforcement path tells the repository "I have no phone to
+ * write here".
  */
 const createAttendanceForMembers = async (
   inputs: CreateAttendanceInput[],
@@ -83,9 +97,22 @@ const createAttendanceForMembers = async (
     for (const input of inputs) {
       created.push(await tx.attendance.create({ data: input }));
 
+      // The conditional update keeps the unenforced-enforcement path from
+      // blanking out a phone that an earlier enforced submission wrote. The
+      // `email` overwrite is unconditional because the email is always the
+      // student's freshest declared value — including the unenforced path,
+      // where the form still carries the email the student typed.
+      const memberUpdate: { email: string; phone?: string } = {
+        email: input.email,
+      };
+
+      if (input.directoryPhone !== undefined) {
+        memberUpdate.phone = input.directoryPhone ?? '';
+      }
+
       await tx.discordMember.update({
         where: { id: input.memberId },
-        data: { email: input.email, phone: input.phone },
+        data: memberUpdate,
       });
     }
 

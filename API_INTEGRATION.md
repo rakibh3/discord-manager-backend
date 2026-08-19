@@ -462,7 +462,9 @@ Every broadcast now records `reminderStartDate`, `reminderEndDate`, `criterion`,
 
 Top-level `alreadySubmitted` is `true` only when **every** server already has today's row — a student in two servers who submitted in one still has something to do.
 
-`POST /api/attendance/submit` records attendance in **every** server the handle belongs to, in one transaction, and returns the same `servers` array with a `recorded` flag per server. The student submits once; the form does not ask them to pick a server. A `409` still means "already submitted", and now means it for every server they are in.
+The duplicate-detection read is **pairing-aware**: when the endpoint is called with the optional `email` query parameter AND roster enforcement is on AND the email resolves to a roster entry paired with a Discord account, only attendance rows whose `member_id` belongs to that paired account count as a duplicate for this email+handle combination. Attendance submitted by a different account that happens to share the same handle is not attributed to this email. Pass the email from the form so the "already submitted" badge matches the email the student actually typed. Without the email (or with the gate off), the prior handle-only behaviour applies. See §8.6 for the full mode table.
+
+`POST /api/attendance/submit` records attendance in **every** server the handle belongs to, in one transaction, and returns the same `servers` array with a `recorded` flag per server. The student submits once; the form does not ask them to pick a server. A `409` still means "already submitted", and now means it for every server they are in. The submit path runs the same pairing-aware duplicate check, threading the `enforceEmail` value through from the gate so an unenforced deployment keeps the prior handle-only behaviour.
 
 `GET /api/attendance/window` is **unchanged** — one shared schedule means one window, so it takes no server parameter. It also carries `emailVerificationRequired`, telling the form whether the email field is checked against the active enrolment roster on submit (a bare boolean — no count, no editor identity, no address).
 
@@ -963,6 +965,17 @@ export type VerifyUserPayload = {
   alreadySubmitted: boolean;
   attendanceDate: string;
   member: VerifiedMember | null;
+  /**
+   * Every configured server the handle is a current member of. The
+   * per-server `alreadySubmitted` is pairing-aware when the endpoint was
+   * called with the optional `email` query parameter — see §8.6 for the
+   * three modes.
+   */
+  servers: Array<{
+    guildId: string;
+    label: string;
+    alreadySubmitted: boolean;
+  }>;
 };
 
 export type VerifyEmailPayload = {
@@ -2265,11 +2278,12 @@ Returns the current attendance submission window projection.
 - **`emailVerificationRequired`** tells the form whether the email field is checked against the enrolment roster on submit. Read it on mount and label the field accordingly ("use the email you enrolled with") — otherwise a student first learns the rule from a 403 after filling the whole form. It is a **bare boolean**: the endpoint exposes no roster entry, no count, and no editor identity, and it still accepts no parameters, so there is nothing here to probe an address against. See §8.6A.
 - The response carries **no admin-shaped fields**: no `updatedBy`, no `scheduler`, no `lastRun`, and no Discord channel or guild ID.
 
-#### 🔓 `GET /api/attendance/verify-user?username=…`
+#### 🔓 `GET /api/attendance/verify-user?username=…&email=…`
 
 | Query      | Type   | Rules                                                                                                                                |
 | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `username` | string | required, trimmed, non-empty, must pass `/^(?!.*\.{2})[a-z0-9_.]{2,32}$/` after normalization (trim → strip leading `@` → lowercase) |
+| `email`    | string | optional, trimmed, must pass the standard email shape (`z.email`). When supplied AND roster enforcement is on AND the email resolves to a paired roster entry, the `alreadySubmitted` answer is restricted to that paired account — see the pairing-aware table below. |
 
 A leading or trailing `_` or `.` is **valid** (`.rabbil`, `itzazad_`). Don't tighten this client-side — an earlier stricter regex locked out 5.3% of real members.
 
@@ -2306,9 +2320,24 @@ A leading or trailing `_` or `.` is **valid** (`.rabbil`, `itzazad_`). Don't tig
 - Top-level `alreadySubmitted` is `true` **only when every server already has today's row**. A member of two servers who submitted in one still has something to do — keep this on the form so the form knows to show "you still have to submit in Batch B".
 - `member` is always `null` when `verified` is `false` — no partial disclosure.
 
+##### The pairing-aware duplicate rule
+
+When the optional `email` query parameter is supplied, the `alreadySubmitted` answer becomes pairing-aware. A Discord username is not a unique account — two students can claim the same display string, and the same handle can resolve to two `discord_members` rows (one per configured server). The pairing-aware rule answers a narrower question: "is this prior row attributable to this email+handle combination?".
+
+| `email` supplied | Roster gate | Roster entry              | Prior rows counted as duplicates                              |
+| ---------------- | ----------- | ------------------------- | -------------------------------------------------------------- |
+| No               | —           | —                         | Any row for any resolved member (prior behaviour)              |
+| Yes              | Off         | —                         | Any row for any resolved member (prior behaviour)              |
+| Yes              | On          | Not on roster             | None (form is told `alreadySubmitted: false`)                  |
+| Yes              | On          | Unpaired                  | None (no link to attribute prior rows to this email)           |
+| Yes              | On          | Paired to this handle     | Only rows whose member belongs to the paired account           |
+| Yes              | On          | Paired to a different account | Only rows whose member belongs to the paired account — none for the submitting handle unless it also resolves to that account |
+
+> ⚠️ **Pass the email on every `/verify-user` call from the form.** Without it, the badge shows "already submitted" for any handle that already submitted today — even one belonging to a different student. The endpoint is already debounced at 500 ms, so the additional query parameter adds no perceptible cost.
+
 **Branch on `data.verified`, never on the HTTP status.**
 
-A malformed handle is a **400** (Zod). The form must tell "fix your typing" (400) apart from "you're not in the server" (200 + `verified: false`).
+A malformed handle is a **400** (Zod). A malformed email is also a **400** (Zod). The form must tell "fix your typing" (400) apart from "you're not in the server" (200 + `verified: false`).
 
 #### 🔓 `GET /api/attendance/verify-email?email=…`
 
@@ -2363,15 +2392,15 @@ A malformed handle is a **400** (Zod). The form must tell "fix your typing" (400
 
 #### 🔓 `POST /api/attendance/submit`
 
-**Body** — exactly these fields; anything else is stripped.
+**Body** — exactly these fields; anything else is refused as a **400**.
 
 | Field                            | Type    | Rules                                                                                       |
 | -------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
-| `name`                           | string  | trimmed, 3–100 chars, `^[\p{L}\s]+$` — **Unicode letters**, so Bengali names are accepted   |
-| `phone`                          | string  | trimmed, `^(?:\+?880\|0)1[3-9]\d{8}$` — `01711000000`, `+8801711000000`, or `8801711000000` |
 | `email`                          | string  | valid email                                                                                 |
 | `discordUsername`                | string  | same rule as `verify-user`                                                                  |
 | `cannotEnterRealDiscordUsername` | boolean | optional; see "Discord-pairing mismatch" below                                              |
+
+The form collects **only** `email` and `discordUsername`. The student's `name` and `phone` are **not** part of the request — they are sourced from the matched active roster entry when roster enforcement is enabled (see §8.6A) and recorded as empty strings when enforcement is disabled. Carrying `name` or `phone` on the body is rejected with a 400 naming the field, so a stale form is surfaced to whoever is operating it rather than silently dropping the extra keys.
 
 **201**
 
