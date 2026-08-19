@@ -111,8 +111,7 @@ const formatTimeLabel = (time: string): string => {
  * students they have until 11:59.
  */
 const buildAnnouncementEmbed = async (open: boolean): Promise<EmbedBuilder> => {
-  const { openTime, closeTime } =
-    await channelScheduleRepository.getOrCreateSchedule();
+  const { closeTime } = await channelScheduleRepository.getOrCreateSchedule();
 
   return open
     ? new EmbedBuilder()

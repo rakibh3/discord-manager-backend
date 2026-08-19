@@ -1,0 +1,126 @@
+// Enrolment roster: the list of people the program actually enrolled, loaded
+// from a spreadsheet an administrator uploads.
+//
+// This is the second of the two independent checks an attendance submission
+// must pass. The first is guild membership, which is answered by
+// `discord_members`; this one answers "is the email address on the roll".
+//
+// The two are deliberately NOT paired: a roster entry carries no Discord
+// identity, and the submit path does not require the matched entry to describe
+// the same person as the Discord account. What is asserted is that an enrolled
+// person's address was supplied by someone who is in a configured server — two
+// facts, checked separately, both required. That is a narrowing of the previous
+// model (which checked no email at all), not an identity check, and it should
+// not be described as one. Pairing later is additive: a nullable
+// `discord_user_id` here plus a tighter comparison in the service.
+//
+// NONE of these models carries a `guild_id`, and that is the load-bearing
+// decision in this file. The program runs out of several identical servers, and
+// an email address identifies a PERSON rather than a membership — someone
+// enrolled in the program is enrolled, not enrolled-in-server-A. A `guild_id`
+// here would make one person two rows whose name and phone can disagree, and
+// would force the submit path to ask "enrolled where?", a question with no
+// answer since a roster row has no Discord identity to scope it by. It would
+// also let an address on server A's roll but not server B's produce a
+// submission recorded in one server and refused in the other — the exact
+// split-outcome failure the single-transaction attendance write exists to
+// prevent. Same reasoning as `reminder_logs`, which has no `guild_id` either.
+
+// One enrolled person. The email address is the identity.
+model RosterEntry {
+  id String @id @default(uuid())
+
+  // Stored already normalized — trimmed and lowercased by
+  // `normalizeRosterEmail()` in `src/utils/rosterEmail.ts`, which is the only
+  // producer of this form. The uniqueness constraint is only meaningful over a
+  // single canonical spelling, so an un-normalized write would let the same
+  // person exist twice and, under an enabled gate, make the lookup miss.
+  //
+  // Normalization is trim + lowercase and NOTHING else: no dot-stripping, no
+  // `+`-suffix stripping, no provider-specific aliasing. Those rules are true
+  // of some providers and false of others, and applying them universally merges
+  // two people who hold genuinely different addresses — which, with enforcement
+  // on, refuses one of them.
+  email String @unique
+
+  name  String
+  phone String?
+
+  // Removal is a flag, never a delete — the same rule `discord_members` follows
+  // for departures. Only active entries count as enrolled, and reactivating a
+  // mistakenly removed person is then an ordinary re-import rather than an
+  // administrative repair.
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // "Who is currently enrolled" — the shape both the settings guard's count and
+  // the admin listing's active filter use.
+  @@index([isActive])
+  @@map("roster_entries")
+}
+
+// One import attempt, kept for audit.
+//
+// This is the only write path that can change who is allowed to submit
+// attendance, so an unexplained change to the roll must be traceable to a
+// person and a file.
+model RosterImport {
+  id String @id @default(uuid())
+
+  fileName String @map("file_name")
+
+  // Audit only, and nullable: deleting an administrator account must not delete
+  // the record of what they uploaded. Same rule as `channel_schedules` and
+  // `announcement_logs`.
+  importedById String? @map("imported_by_id")
+  importedBy   User?   @relation(fields: [importedById], references: [id], onDelete: SetNull)
+
+  totalRows      Int @map("total_rows")
+  createdCount   Int @map("created_count")
+  updatedCount   Int @map("updated_count")
+  skippedCount   Int @map("skipped_count")
+  duplicateCount Int @map("duplicate_count")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // The history listing, most recent first.
+  @@index([createdAt])
+  @@map("roster_imports")
+}
+
+// Whether the roster gates attendance submissions. One row, one key.
+//
+// Stored in the database rather than read from the environment because the
+// sequence an administrator actually performs is deploy → upload the sheet →
+// check it → turn it on, and the middle two steps happen after the process is
+// already running. An env var would make arming the gate a redeployment and
+// would give no `updated_by`.
+//
+// Same single-row shape as `channel_schedules` and `announcement_templates`,
+// materialized lazily by `getOrCreateSettings()`.
+model RosterSetting {
+  // The only key in use today.
+  key String @id
+
+  // Default FALSE, and that default is load-bearing. A newly deployed system
+  // holds an empty roster; a gate that were on by default would refuse every
+  // student in every server at once, with a correct-looking 403 and no error
+  // raised anywhere — an outage whose only symptom is a collapse in submission
+  // volume. The endpoint that enables it therefore refuses while no active
+  // entry exists.
+  //
+  // There is deliberately no "skip the check when the roster is empty" rule on
+  // the submission path. A gate that disarms itself under a condition nobody is
+  // watching is a gate nobody can reason about; the guard belongs on the arming
+  // step, where a human reads the refusal.
+  enforceEmail Boolean @default(false) @map("enforce_email")
+
+  updatedById String? @map("updated_by_id")
+  updatedBy   User?   @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("roster_settings")
+}

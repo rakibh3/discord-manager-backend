@@ -11,6 +11,7 @@ import {
   memberRepository,
   VerifiedMember,
 } from '@/repositories/member.repository';
+import { rosterRepository } from '@/repositories/roster.repository';
 import {
   addDhakaDays,
   DHAKA_TIMEZONE,
@@ -19,6 +20,7 @@ import {
   getDhakaWeekday,
 } from '@/utils/dhakaDate';
 import { normalizeDiscordUsername } from '@/utils/discordUsername';
+import { normalizeRosterEmail } from '@/utils/rosterEmail';
 
 /**
  * Business rules for the public attendance form.
@@ -63,6 +65,49 @@ export type TSubmitAttendancePayload = {
 /** The message an unknown or departed handle gets, from either endpoint. */
 const NOT_A_MEMBER_MESSAGE =
   'This Discord username was not found in our Discord server. Please check the username, or join the server first.';
+
+/**
+ * The message an address that is not on the roster gets.
+ *
+ * Says only that the address was not recognized. No name, no phone number, no
+ * suggested spelling, no count of who is enrolled — and, critically, the SAME
+ * message whether the address was never on the roll or was removed from it.
+ * Distinguishing those two would let anyone who can type an address confirm
+ * that a particular person used to be enrolled, which is the same disclosure
+ * `findActiveMembersByUsername` collapses for departed members.
+ */
+const NOT_ENROLLED_MESSAGE =
+  'This email address is not on our enrolled student list. Please use the email address you enrolled with, or contact an admin.';
+
+/**
+ * The roster gate: does this email address belong to an enrolled person?
+ *
+ * Reads the stored setting FIRST, and when enforcement is off returns without
+ * touching the roster at all — so a deployment that has not armed the feature
+ * pays one primary-key lookup and behaves exactly as it did before the roster
+ * existed.
+ *
+ * There is deliberately no "the roster is empty, so let everyone through"
+ * branch here. A gate that disarms itself under a condition nobody is watching
+ * is a gate nobody can reason about; the guard against arming an empty roster
+ * lives on `PATCH /api/roster/settings`, where a human reads the refusal.
+ *
+ * One indexed read on a unique column. No Discord call, and no dependence on
+ * how many servers the handle belongs to.
+ */
+const assertEnrolled = async (rawEmail: string): Promise<void> => {
+  const settings = await rosterRepository.getOrCreateSettings();
+
+  if (!settings.enforceEmail) return;
+
+  const entry = await rosterRepository.findActiveEntryByEmail(
+    normalizeRosterEmail(rawEmail),
+  );
+
+  if (!entry) {
+    throw new AppError(httpStatus.FORBIDDEN, NOT_ENROLLED_MESSAGE);
+  }
+};
 
 /**
  * Resolves a raw form input to every configured server the handle is currently
@@ -136,6 +181,17 @@ const isDuplicateAttendanceError = (
  * found is the routine answer here, and the form has to render something either
  * way. `member` is `null` whenever `verified` is false — no partial disclosure
  * about handles that are not active members.
+ *
+ * Takes NO email parameter, deliberately, and must not gain one. This endpoint
+ * carries a 60/min per-IP budget on a process-local store; `submit` carries
+ * 5/15min. Accepting an address here would turn it into a roster oracle
+ * answering ~86,000 queries a day per IP — enumeration of the enrolment roll of
+ * every student in the program. Behind the submit budget the same oracle costs
+ * 480 a day and every probe is a logged write attempt. The roster is contact
+ * data for thousands of people; it does not belong behind the cheap read
+ * budget. The form is told UP FRONT that an enrolled address is required
+ * through `emailVerificationRequired` on `GET /api/attendance/window`, which
+ * exposes a boolean and nothing else.
  */
 const verifyUser = async (
   rawUsername: string,
@@ -205,6 +261,22 @@ const verifyUser = async (
  */
 const submitAttendance = async (payload: TSubmitAttendancePayload) => {
   const attendanceDate = getDhakaDate();
+
+  // The roster gate runs BEFORE membership resolution. It is one indexed read
+  // against a local table, where resolution is a `findMany` followed — on
+  // success — by an existence read and a transactional multi-row write, so
+  // refusing on the cheaper check does less work per rejected request on the
+  // one endpoint an unauthenticated stranger can reach. It also keeps the
+  // messages unambiguous: a request failing both checks is told about the
+  // email, and once that is corrected is told about the handle, rather than the
+  // two competing to explain the refusal.
+  //
+  // The two checks are INDEPENDENT by design. The roster knows nothing about
+  // Discord, and this does not require the matched entry to describe the same
+  // person as the account. What is asserted is that an enrolled person's
+  // address was supplied AND that the submitting account is in a configured
+  // server. See the header of `prisma/schema/roster.prisma`.
+  await assertEnrolled(payload.email);
 
   const members = await resolveActiveMembers(payload.discordUsername);
 
@@ -282,6 +354,12 @@ export type TAttendanceWindowResult = {
   timezone: string;
   nextOpenAt: Date | null;
   closesAt: Date | null;
+  /**
+   * Whether the email entered on the form must be one on the enrolled student
+   * list. A bare boolean and nothing else about the roster — no count, no
+   * address, no editor identity — on the one route reachable without a token.
+   */
+  emailVerificationRequired: boolean;
 };
 
 /**
@@ -292,7 +370,13 @@ export type TAttendanceWindowResult = {
  * traffic cannot exhaust Discord rate limits or degrade member sync.
  */
 const getAttendanceWindow = async (): Promise<TAttendanceWindowResult> => {
-  const schedule = await channelScheduleRepository.getOrCreateSchedule();
+  // Read together: both are single-row lookups of stored configuration, and the
+  // roster flag comes from the SAME row the submit gate reads, so the form can
+  // never advertise a requirement different from the one actually enforced.
+  const [schedule, rosterSettings] = await Promise.all([
+    channelScheduleRepository.getOrCreateSchedule(),
+    rosterRepository.getOrCreateSettings(),
+  ]);
   const now = new Date();
   const today = getDhakaDate(now);
 
@@ -326,9 +410,11 @@ const getAttendanceWindow = async (): Promise<TAttendanceWindowResult> => {
   }
 
   // The explicit literal is the leak barrier: `getOrCreateSchedule()` returns
-  // `TChannelScheduleWithEditor` carrying `updatedBy` (admin name and email).
-  // A spread-and-omit would expose any field later added to the row or the include,
-  // on the one route reachable without a token.
+  // `TChannelScheduleWithEditor` carrying `updatedBy` (admin name and email),
+  // and `getOrCreateSettings()` returns the same shape for the roster row.
+  // A spread-and-omit would expose any field later added to either row or
+  // include, on the one route reachable without a token. Only the boolean
+  // crosses from the roster settings — never the editor, never a count.
   return {
     isOpen,
     date: today,
@@ -339,6 +425,7 @@ const getAttendanceWindow = async (): Promise<TAttendanceWindowResult> => {
     timezone: DHAKA_TIMEZONE,
     nextOpenAt,
     closesAt,
+    emailVerificationRequired: rosterSettings.enforceEmail,
   };
 };
 

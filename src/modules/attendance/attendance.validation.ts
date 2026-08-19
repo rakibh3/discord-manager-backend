@@ -65,7 +65,16 @@ const submitAttendanceValidationSchema = z.object({
         'Enter a valid Bangladeshi mobile number, for example 01711000000 or +8801711000000',
     }),
 
-  email: z.email({ error: 'Please provide a valid email address' }),
+  // Trimmed BEFORE the address check. A student pasting their email out of a
+  // chat message brings a trailing space with it, and `z.email()` on the raw
+  // value rejects that as malformed — handing them "Please Provide A Valid
+  // Email Address" for an address that is perfectly valid. The roster gate
+  // normalizes (trim + lowercase) before comparing, so padding never reaches
+  // the lookup either way; this only stops the form refusing it first.
+  email: z
+    .string({ error: 'Email address is required' })
+    .trim()
+    .pipe(z.email({ error: 'Please provide a valid email address' })),
 
   discordUsername: discordUsernameField('Discord username'),
 });

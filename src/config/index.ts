@@ -102,6 +102,41 @@ const parseReminderDmRate = (value: string | undefined): number => {
 };
 
 /**
+ * Bounds on a roster spreadsheet upload.
+ *
+ * Both are blast-radius controls rather than performance limits, in the same
+ * spirit as the 92-day cap on a reminder range. The file the admin uploads
+ * decides who may submit attendance, and a wrong file — the whole export
+ * instead of this term's cohort, a 40 MB workbook with images in it — should be
+ * a refusal an admin reads, not something the process discovers by exhausting
+ * memory while ~5,000 students are on the form.
+ *
+ * The size limit is handed to multer, which enforces it while the upload is
+ * still streaming, so an oversized file never reaches the parser. The row limit
+ * is checked after parsing and before any write.
+ *
+ * A missing, non-numeric, or non-positive value falls back to the default
+ * rather than being honoured, so a typo cannot remove the bound entirely.
+ */
+const ROSTER_MAX_FILE_BYTES_DEFAULT = 5 * 1024 * 1024;
+const ROSTER_MAX_ROWS_DEFAULT = 20_000;
+
+const parsePositiveInt = (
+  value: string | undefined,
+  fallback: number,
+): number => {
+  if (!value?.trim()) return fallback;
+
+  const parsed = Number(value.trim());
+
+  if (!Number.isFinite(parsed)) return fallback;
+
+  const truncated = Math.trunc(parsed);
+
+  return truncated > 0 ? truncated : fallback;
+};
+
+/**
  * How many reverse proxies sit in front of the API.
  *
  * Handed to `app.set('trust proxy', …)` as an integer hop count, never as
@@ -138,6 +173,16 @@ export default {
   redis_url: env.REDIS_URL?.trim() || 'redis://localhost:6379',
   reminder_worker_enabled: parseWorkerEnabled(env.REMINDER_WORKER_ENABLED),
   reminder_dm_per_second: parseReminderDmRate(env.REMINDER_DM_PER_SECOND),
+  roster: {
+    maxFileBytes: parsePositiveInt(
+      env.ROSTER_IMPORT_MAX_FILE_BYTES,
+      ROSTER_MAX_FILE_BYTES_DEFAULT,
+    ),
+    maxRows: parsePositiveInt(
+      env.ROSTER_IMPORT_MAX_ROWS,
+      ROSTER_MAX_ROWS_DEFAULT,
+    ),
+  },
   env: env.NODE_ENV,
   admin: {
     emails: env.ADMIN_EMAILS

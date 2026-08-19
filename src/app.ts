@@ -11,6 +11,7 @@ import { authRouter } from '@/modules/auth/auth.routes';
 import { dailyStatusRouter } from '@/modules/dailyStatus/dailyStatus.routes';
 import { discordRouter } from '@/modules/discord/discord.routes';
 import { reminderRouter } from '@/modules/reminder/reminder.routes';
+import { rosterRouter } from '@/modules/roster/roster.routes';
 import { scheduleRouter } from '@/modules/schedule/schedule.routes';
 import { userRouter } from '@/modules/user/user.routes';
 
@@ -43,6 +44,9 @@ app.use('/api/schedule', scheduleRouter);
 app.use('/api/daily-status', dailyStatusRouter);
 app.use('/api/reminders', reminderRouter);
 app.use('/api/announcement', announcementRouter);
+// The enrolment roster and the switch that arms the email check. Admin-only —
+// it holds contact details for every enrolled student. See roster.routes.ts.
+app.use('/api/roster', rosterRouter);
 // The only unauthenticated router in the application — students have no
 // account to authenticate with. See attendance.routes.ts.
 app.use('/api/attendance', attendanceRouter);

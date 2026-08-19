@@ -54,6 +54,12 @@
       "value": "",
       "type": "string",
       "description": "A configured Discord server ID. Leave empty to act on every server. Get the list from GET /discord/servers."
+    },
+    {
+      "key": "rosterEntryId",
+      "value": "",
+      "type": "string",
+      "description": "A roster entry id, copied from GET /roster."
     }
   ],
   "event": [
@@ -111,12 +117,12 @@
                   "",
                   "if (jsonData.data && jsonData.data.accessToken) {",
                   "    pm.collectionVariables.set('accessToken', jsonData.data.accessToken);",
-                  "    console.log('✅ accessToken saved to collection variables');",
+                  "    console.log('\u2705 accessToken saved to collection variables');",
                   "}",
                   "",
                   "if (jsonData.data && jsonData.data.refreshToken) {",
                   "    pm.collectionVariables.set('refreshToken', jsonData.data.refreshToken);",
-                  "    console.log('✅ refreshToken saved to collection variables');",
+                  "    console.log('\u2705 refreshToken saved to collection variables');",
                   "}",
                   "",
                   "// Basic assertions",
@@ -162,7 +168,7 @@
                   "",
                   "if (jsonData.data && jsonData.data.accessToken) {",
                   "    pm.collectionVariables.set('accessToken', jsonData.data.accessToken);",
-                  "    console.log('✅ accessToken refreshed and saved');",
+                  "    console.log('\u2705 accessToken refreshed and saved');",
                   "}",
                   "",
                   "pm.test('Token refreshed', function () {",
@@ -289,7 +295,7 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/discord/sync/status",
-            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), the last sync summary, and whether #daily-update ingestion is running. `dailyUpdate.ingestionEnabled` is false when the bot fell back to a login without the Message Content Intent — member sync still works, but no daily updates are being recorded."
+            "description": "Requires admin auth. Returns bot connection state, stored member counts (total / active / departed), the last sync summary, and whether #daily-update ingestion is running. `dailyUpdate.ingestionEnabled` is false when the bot fell back to a login without the Message Content Intent \u2014 member sync still works, but no daily updates are being recorded."
           },
           "event": [
             {
@@ -310,13 +316,13 @@
                   "// The departure guard trips when a member fetch looks truncated,",
                   "// which almost always means the Server Members privileged intent is off.",
                   "if (jsonData.data && jsonData.data.lastSync && jsonData.data.lastSync.guardTripped) {",
-                  "    console.warn('⚠️ Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
+                  "    console.warn('\u26a0\ufe0f Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
                   "}",
                   "",
                   "// Ingestion off is invisible from outside except here: the dashboard would",
                   "// simply show every member as missing their daily update.",
                   "if (jsonData.data && jsonData.data.dailyUpdate && !jsonData.data.dailyUpdate.ingestionEnabled) {",
-                  "    console.warn('⚠️ Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
+                  "    console.warn('\u26a0\ufe0f Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
                   "}"
                 ]
               }
@@ -329,10 +335,15 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/discord/servers",
-              "host": ["{{baseUrl}}"],
-              "path": ["discord", "servers"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "discord",
+                "servers"
+              ]
             },
-            "description": "Every configured Discord server, with its label and whether the bot currently reaches it.\n\nBuild any server filter from this rather than hard-coding IDs. A single-server deployment returns one entry — treat that as the normal case, not a special mode."
+            "description": "Every configured Discord server, with its label and whether the bot currently reaches it.\n\nBuild any server filter from this rather than hard-coding IDs. A single-server deployment returns one entry \u2014 treat that as the normal case, not a special mode."
           },
           "event": [
             {
@@ -353,13 +364,13 @@
                   "// The departure guard trips when a member fetch looks truncated,",
                   "// which almost always means the Server Members privileged intent is off.",
                   "if (jsonData.data && jsonData.data.lastSync && jsonData.data.lastSync.guardTripped) {",
-                  "    console.warn('⚠️ Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
+                  "    console.warn('\u26a0\ufe0f Departure guard tripped - check the Server Members intent in the Discord Developer Portal');",
                   "}",
                   "",
                   "// Ingestion off is invisible from outside except here: the dashboard would",
                   "// simply show every member as missing their daily update.",
                   "if (jsonData.data && jsonData.data.dailyUpdate && !jsonData.data.dailyUpdate.ingestionEnabled) {",
-                  "    console.warn('⚠️ Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
+                  "    console.warn('\u26a0\ufe0f Daily-update ingestion is DISABLED: ' + jsonData.data.dailyUpdate.reason);",
                   "}"
                 ]
               }
@@ -436,7 +447,7 @@
                   "// A scheduler that cannot edit the overwrite has no other symptom",
                   "// than a channel that never opens.",
                   "if (jsonData.data && jsonData.data.scheduler && jsonData.data.scheduler.lastRun && jsonData.data.scheduler.lastRun.error) {",
-                  "    console.warn('⚠️ Last scheduler run failed: ' + jsonData.data.scheduler.lastRun.error);",
+                  "    console.warn('\u26a0\ufe0f Last scheduler run failed: ' + jsonData.data.scheduler.lastRun.error);",
                   "}"
                 ]
               }
@@ -555,7 +566,7 @@
                 }
               }
             },
-            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
+            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           }
         },
         {
@@ -578,8 +589,248 @@
                 }
               }
             },
-            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
+            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           }
+        }
+      ]
+    },
+    {
+      "name": "Roster",
+      "description": "The enrolment roster and the switch that arms the attendance email check. Every route requires ADMIN auth without exception - this holds the names, email addresses and phone numbers of every enrolled student, and there is no membership check that could stand in for a credential here.\n\nHow the feature is turned on, in order:\n1. POST /roster/import - upload the spreadsheet.\n2. GET /roster and GET /roster/settings - check the roll looks right (settings reports `activeEntries`).\n3. PATCH /roster/settings { enforceEmail: true } - arm it. Takes effect on the next submission, no restart.\n\nRollback is PATCH /roster/settings { enforceEmail: false }: one request, immediate, no deploy.\n\nTwo properties worth knowing before you touch it. An import UPSERTS by normalized email and can never deactivate anybody, so a truncated or wrong file adds noise rather than locking students out. And enabling enforcement is REFUSED while the roster has no active entries, because arming an empty gate refuses every student in every server with a correct-looking 403 and no error anywhere.",
+      "item": [
+        {
+          "name": "Import Roster (Excel/CSV)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/roster/import",
+            "description": "Requires admin auth. Multipart upload, field name `file`. Accepts .xlsx and .csv.\n\nIn Postman: Body > form-data > key `file`, type File, then pick the spreadsheet.\n\nColumns are located by HEADER NAME, never by position, matched case-insensitively after trimming:\n- email: email, email address, e-mail, e mail, mail\n- name: name, full name, student name, fullname\n- phone: phone, phone number, mobile, mobile number, contact, contact number\n\nUnrecognized columns (batch, roll number, ...) are ignored. A sheet with no email or no name column is a 400 naming the headers found, with NOTHING written - every row would fail identically, so a summary of 5,000 identical failures would be a worse report.\n\nA legacy binary .xls is a 400 telling you to re-save as .xlsx (the parser genuinely cannot read that format).\n\nPartial success is a 200, not an error. Valid rows load; invalid ones are skipped and listed in `data.rejectedRows` with the sheet's own row numbers and a reason. An error status would say nothing happened and invite a re-upload, when those rows really did load.\n\nAn address repeated inside one sheet resolves to ONE entry - the last row wins - and is reported in `data.duplicateAddresses` with every row number involved."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Import succeeded', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.have.property('created');",
+                  "    pm.expect(jsonData.data).to.have.property('updated');",
+                  "    pm.expect(jsonData.data).to.have.property('skipped');",
+                  "});",
+                  "",
+                  "// The counts must account for every data row read.",
+                  "pm.test('Counts reconcile against rows read', function () {",
+                  "    const d = jsonData.data;",
+                  "    pm.expect(d.created + d.updated + d.skipped + d.duplicateRowsCollapsed).to.eql(d.totalRows);",
+                  "});",
+                  "",
+                  "// Skipped rows are actionable: fix these lines in the sheet and re-upload.",
+                  "if (jsonData.data && jsonData.data.skipped > 0) {",
+                  "    console.warn('Rows skipped:', JSON.stringify(jsonData.data.rejectedRows));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Roster",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/roster?status=active&page=1&limit=50",
+            "description": "Requires admin auth. Paginated, searchable listing.\n\n- `search` - matches name or email, case-insensitive, partial.\n- `status` - active (default) | inactive | all.\n- `page`, `limit` - limit maxes at 200.\n\n`meta.total` is the count matching the same filter, so you can see the size of the roll without paging through it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Roster listed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data).to.be.an('array');",
+                  "    pm.expect(jsonData.meta).to.have.property('total');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Roster Entry",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/roster/{{rosterEntryId}}",
+            "description": "Requires admin auth. Correct one entry's name, email, or phone. At least one field is required - an empty patch is a 400 rather than a 200 reporting a save that changed nothing.\n\nThe email is normalized (trimmed and lowercased) before storage. Changing it to an address another entry already holds is a 409, never a silent merge of two people.\n\n`phone: null` clears the number; omitting the key leaves it alone.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rakibul Hasan\",\n  \"phone\": \"01711000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Entry updated', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().success).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Remove Roster Entry",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/roster/{{rosterEntryId}}",
+            "description": "Requires admin auth. DEACTIVATES the entry - the row is kept, so the removal is reversible and the audit trail survives. Nothing in this API hard-deletes a roster entry.\n\nOnly active entries count as enrolled, so with enforcement on this person can no longer submit. Restore them with PATCH /roster/{id}/restore, or by re-importing a sheet containing their address."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Entry deactivated', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data.isActive).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Restore Roster Entry",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/roster/{{rosterEntryId}}/restore",
+            "description": "Requires admin auth. Reinstates a deactivated entry with its stored details."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Entry restored', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data.isActive).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Import History",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/roster/imports?page=1&limit=20",
+            "description": "Requires admin auth. Past imports, most recent first: file name, the administrator who uploaded it, when, and the resulting counts.\n\nThis is the audit trail for the only write path that can change who is allowed to submit attendance. Check it first when the roll is not what someone expected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('History listed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Roster Settings",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/roster/settings",
+            "description": "Requires admin auth. Reports `enforceEmail`, `activeEntries`, and who last changed the setting.\n\n`activeEntries` is returned alongside the flag on purpose: it is what makes the effect of arming the gate visible BEFORE you arm it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Settings retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data).to.have.property('enforceEmail');",
+                  "    pm.expect(jsonData.data).to.have.property('activeEntries');",
+                  "});",
+                  "",
+                  "// Arming against an empty roster is refused - this is why.",
+                  "if (jsonData.data && jsonData.data.activeEntries === 0) {",
+                  "    console.warn('Roster is empty. Enabling enforceEmail will be refused until a sheet is imported.');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Enable / Disable Email Check",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/roster/settings",
+            "description": "Requires admin auth. Arms or disarms the roster gate on POST /attendance/submit. Takes effect on the next submission, with no restart.\n\nEnabling is REFUSED with a 400 while the roster has no active entries: with the gate on and nothing to match, every student in every server is refused with a correct-looking 403, and the only symptom is a collapse in submission volume.\n\nDisabling always succeeds, whatever the roster holds - the rollback for this feature must never itself be refusable. `{ \"enforceEmail\": false }` IS the rollback.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enforceEmail\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Setting saved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().data).to.have.property('enforceEmail');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -946,7 +1197,7 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/reminders/send",
-            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast for that date may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.\n\n**Multi-server.** Covers every configured server unless `guildIds` narrows it. One Discord account receives exactly ONE DM even when targeted through several servers — `targetCount` counts recipient rows, `uniqueRecipients` counts people. The same-date 409 stays global, because it guards the bot's single shared DM budget.",
+            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast for that date may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.\n\n**Multi-server.** Covers every configured server unless `guildIds` narrows it. One Discord account receives exactly ONE DM even when targeted through several servers \u2014 `targetCount` counts recipient rows, `uniqueRecipients` counts people. The same-date 409 stays global, because it guards the bot's single shared DM budget.",
             "header": [
               {
                 "key": "Content-Type",
@@ -1243,7 +1494,7 @@
     },
     {
       "name": "Attendance Announcement",
-      "description": "The evening announcement posted to #attendance (requires ADMIN role). Nothing here is student-facing.\n\nThe message and its schedule are stored in the database, not in code or .env, and take effect without a restart. announceTime is HH:mm wall-clock in Asia/Dhaka; the cron expression is derived by the backend and never exposed.\n\n⚠️ MENTIONS: they come ONLY from the structured allowlist (mentionRoleIds, mentionUsernames, mentionEveryone). Mention text typed into the body is inert — allowedMentions is built from the allowlist alone, so a stray @everyone in the message cannot ping anybody. Conversely, mentionEveryone: true pings every member of the guild every evening until it is turned off.\n\nDUPLICATES: at most one post per Dhaka day, enforced by a database claim rather than by timing. A second send returns 409; { \"force\": true } is the only way past it. Beneath that, every send carries enforceNonce with a deterministic nonce, because discord.js retries a REST call that times out and Discord may already have created the message — without the nonce one logical send can leave several identical messages in the channel.\n\nOperational prerequisite: the bot needs \"Send Messages\" on the attendance channel. Without it every send fails, which is reported as a 403 on send and under `scheduler.lastOutcome` on the read.",
+      "description": "The evening announcement posted to #attendance (requires ADMIN role). Nothing here is student-facing.\n\nThe message and its schedule are stored in the database, not in code or .env, and take effect without a restart. announceTime is HH:mm wall-clock in Asia/Dhaka; the cron expression is derived by the backend and never exposed.\n\n\u26a0\ufe0f MENTIONS: they come ONLY from the structured allowlist (mentionRoleIds, mentionUsernames, mentionEveryone). Mention text typed into the body is inert \u2014 allowedMentions is built from the allowlist alone, so a stray @everyone in the message cannot ping anybody. Conversely, mentionEveryone: true pings every member of the guild every evening until it is turned off.\n\nDUPLICATES: at most one post per Dhaka day, enforced by a database claim rather than by timing. A second send returns 409; { \"force\": true } is the only way past it. Beneath that, every send carries enforceNonce with a deterministic nonce, because discord.js retries a REST call that times out and Discord may already have created the message \u2014 without the nonce one logical send can leave several identical messages in the channel.\n\nOperational prerequisite: the bot needs \"Send Messages\" on the attendance channel. Without it every send fails, which is reported as a 403 on send and under `scheduler.lastOutcome` on the read.",
       "item": [
         {
           "name": "Get Announcement",
@@ -1278,12 +1529,12 @@
                   "// A missing Send Messages permission has no symptom but a quiet channel.",
                   "const outcome = jsonData.data.scheduler && jsonData.data.scheduler.lastOutcome;",
                   "if (outcome && outcome.result && outcome.result.status === 'failed') {",
-                  "    console.warn('⚠️ Last announcement failed: ' + outcome.result.error);",
+                  "    console.warn('\u26a0\ufe0f Last announcement failed: ' + outcome.result.error);",
                   "}",
                   "",
-                  "// Nightly mass ping — worth seeing in the runner output.",
+                  "// Nightly mass ping \u2014 worth seeing in the runner output.",
                   "if (jsonData.data.template.mentionEveryone) {",
-                  "    console.warn('⚠️ mentionEveryone is ON — every post pings the whole guild');",
+                  "    console.warn('\u26a0\ufe0f mentionEveryone is ON \u2014 every post pings the whole guild');",
                   "}"
                 ]
               }
@@ -1350,7 +1601,7 @@
                 }
               }
             },
-            "description": "Rejected with 400 naming the unknown token and listing the supported set.\n\nThe check runs in the service rather than in Zod on purpose: handleZodValidationError Title-Cases every word of a Zod message, which would hand the admin `{{Close_time}}` — and this message exists precisely to tell them the exact string to type. Show it verbatim.\n\nLeft in the text, an unknown placeholder reaches the whole program as literal characters in the evening announcement."
+            "description": "Rejected with 400 naming the unknown token and listing the supported set.\n\nThe check runs in the service rather than in Zod on purpose: handleZodValidationError Title-Cases every word of a Zod message, which would hand the admin `{{Close_time}}` \u2014 and this message exists precisely to tell them the exact string to type. Show it verbatim.\n\nLeft in the text, an unknown placeholder reaches the whole program as literal characters in the evening announcement."
           },
           "event": [
             {
@@ -1391,7 +1642,7 @@
                 }
               }
             },
-            "description": "⚠️ Turns the nightly announcement into a guild-wide ping and LEAVES IT ON until something turns it off.\n\nThis flag is the only way the announcement can notify everyone. It is deliberately not expressible as an entry in mentionRoleIds, because Discord's @everyone role ID is the guild ID — an accident waiting to happen in a free-text field.\n\nThe admin who set it is recorded in template.updatedBy. Verify against the rendered mention line before sending anything."
+            "description": "\u26a0\ufe0f Turns the nightly announcement into a guild-wide ping and LEAVES IT ON until something turns it off.\n\nThis flag is the only way the announcement can notify everyone. It is deliberately not expressible as an entry in mentionRoleIds, because Discord's @everyone role ID is the guild ID \u2014 an accident waiting to happen in a free-text field.\n\nThe admin who set it is recorded in template.updatedBy. Verify against the rendered mention line before sending anything."
           },
           "event": [
             {
@@ -1431,7 +1682,7 @@
                 }
               }
             },
-            "description": "Empty arrays clear the allowlist — this is the \"notify nobody\" state, and the one the row is born with.\n\nContrast daysOfWeek, where an empty array is a 400: a schedule that can never fire is a mistake, while a mention list that pings nobody is a legitimate choice."
+            "description": "Empty arrays clear the allowlist \u2014 this is the \"notify nobody\" state, and the one the row is born with.\n\nContrast daysOfWeek, where an empty array is a 400: a schedule that can never fire is a mistake, while a mention list that pings nobody is a legitimate choice."
           },
           "event": [
             {
@@ -1471,7 +1722,7 @@
                 }
               }
             },
-            "description": "Rejected with 400 — a role entry must be a 17-20 digit snowflake.\n\nOnly the SHAPE is checked here. Whether the role still exists is resolved at post time, because a role can be deleted between the save and 19:00; an entry that no longer resolves is dropped from that post and recorded in unresolvedTargets rather than blocking the announcement."
+            "description": "Rejected with 400 \u2014 a role entry must be a 17-20 digit snowflake.\n\nOnly the SHAPE is checked here. Whether the role still exists is resolved at post time, because a role can be deleted between the save and 19:00; an entry that no longer resolves is dropped from that post and recorded in unresolvedTargets rather than blocking the announcement."
           },
           "event": [
             {
@@ -1590,7 +1841,7 @@
                 }
               }
             },
-            "description": "An empty body previews what is currently stored — the fastest way to see tonight's message without touching anything.\n\nNote `closeTime` in the response: it is read from the #daily-update schedule, not stored on the template, so changing the close time in Channel Schedule changes this message with nobody editing it."
+            "description": "An empty body previews what is currently stored \u2014 the fastest way to see tonight's message without touching anything.\n\nNote `closeTime` in the response: it is read from the #daily-update schedule, not stored on the template, so changing the close time in Channel Schedule changes this message with nobody editing it."
           },
           "event": [
             {
@@ -1630,7 +1881,7 @@
                 }
               }
             },
-            "description": "Requires admin auth. Posts the announcement immediately, leaving the stored schedule untouched. Works on every process, including one where SCHEDULER_ENABLED is false.\n\nRespects the once-per-day claim: if today is already posted the request is a 409 naming the earlier post, and nothing is sent. `{ \"force\": true }` posts a deliberate second message as the next attempt.\n\nA failed send does NOT consume the day - a later attempt on the same date is allowed to post.\n\n403 means the bot lacks \"Send Messages\" on the attendance channel. 503 means the bot is not connected or Discord refused the message.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
+            "description": "Requires admin auth. Posts the announcement immediately, leaving the stored schedule untouched. Works on every process, including one where SCHEDULER_ENABLED is false.\n\nRespects the once-per-day claim: if today is already posted the request is a 409 naming the earlier post, and nothing is sent. `{ \"force\": true }` posts a deliberate second message as the next attempt.\n\nA failed send does NOT consume the day - a later attempt on the same date is allowed to post.\n\n403 means the bot lacks \"Send Messages\" on the attendance channel. 503 means the bot is not connected or Discord refused the message.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
           },
           "event": [
             {
@@ -1670,7 +1921,7 @@
                 }
               }
             },
-            "description": "Run \"Send Announcement Now\" first, then this. The message names the earlier post's time and attempt number.\n\nThe refusal comes from the (key, announcement_date, attempt) unique constraint, not from a read-then-write check — a pre-check would let a process restarting at 19:00 and an admin clicking Send both through. Same reasoning as the attendance duplicate in the public folder.\n\nA FAILED attempt does NOT produce this: a failed send never consumes the day, and a plain retry is allowed to post.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
+            "description": "Run \"Send Announcement Now\" first, then this. The message names the earlier post's time and attempt number.\n\nThe refusal comes from the (key, announcement_date, attempt) unique constraint, not from a read-then-write check \u2014 a pre-check would let a process restarting at 19:00 and an admin clicking Send both through. Same reasoning as the attendance duplicate in the public folder.\n\nA FAILED attempt does NOT produce this: a failed send never consumes the day, and a plain retry is allowed to post.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
           },
           "event": [
             {
@@ -1710,7 +1961,7 @@
                 }
               }
             },
-            "description": "⚠️ Posts a SECOND real message today, filed as the next attempt. The only way past the once-per-day claim.\n\nUse it to recover a day stuck in SENDING (a crash between the claim and the post), or when a second announcement is genuinely intended. A losing race here hits the unique constraint and reports a conflict rather than posting twice.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 — read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
+            "description": "\u26a0\ufe0f Posts a SECOND real message today, filed as the next attempt. The only way past the once-per-day claim.\n\nUse it to recover a day stuck in SENDING (a crash between the claim and the post), or when a second announcement is genuinely intended. A losing race here hits the unique constraint and reports a conflict rather than posting twice.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status.\n\nEach named server takes its OWN once-per-day claim, so a failure in one does not consume another's day."
           },
           "event": [
             {
@@ -1742,8 +1993,13 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/counts?date={{dailyStatusDate}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status", "counts"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status",
+                "counts"
+              ],
               "query": [
                 {
                   "key": "date",
@@ -1795,8 +2051,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&page=1&limit=50",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "date",
@@ -1852,8 +2112,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&status=MISSING_UPDATE&page=1&limit=50",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "date",
@@ -1909,8 +2173,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?date={{dailyStatusDate}}&search=rakib&page=1&limit=50",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "date",
@@ -1963,8 +2231,14 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/members/{{dailyStatusMemberId}}?date={{dailyStatusDate}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status", "members", "{{dailyStatusMemberId}}"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status",
+                "members",
+                "{{dailyStatusMemberId}}"
+              ],
               "query": [
                 {
                   "key": "date",
@@ -2000,8 +2274,13 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/export?date={{dailyStatusDate}}&format=csv",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status", "export"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status",
+                "export"
+              ],
               "query": [
                 {
                   "key": "date",
@@ -2043,8 +2322,13 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/counts?from=2026-08-15&to=2026-08-17&daysOfWeek=0,1,2,3,4",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status", "counts"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status",
+                "counts"
+              ],
               "query": [
                 {
                   "key": "from",
@@ -2093,8 +2377,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?from=2026-08-15&to=2026-08-17&page=1&limit=50&sortBy=missedBothDays&sortDir=desc",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "from",
@@ -2155,8 +2443,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?from=2026-08-15&to=2026-08-17&rangeStatus=NONE",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "from",
@@ -2205,8 +2497,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?from=2026-08-15&to=2026-08-17&minMissedBothDays=2",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "from",
@@ -2255,8 +2551,12 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status?from=2026-08-18&to=2026-08-16",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status"
+              ],
               "query": [
                 {
                   "key": "from",
@@ -2301,8 +2601,14 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/members/{{memberId}}?from=2026-08-15&to=2026-08-17",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status", "members", "{{memberId}}"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status",
+                "members",
+                "{{memberId}}"
+              ],
               "query": [
                 {
                   "key": "from",
@@ -2347,8 +2653,13 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/daily-status/export?from=2026-08-15&to=2026-08-17&format=csv",
-              "host": ["{{baseUrl}}"],
-              "path": ["daily-status", "export"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-status",
+                "export"
+              ],
               "query": [
                 {
                   "key": "from",

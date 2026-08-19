@@ -23,6 +23,7 @@ Everything below was read out of the source (`src/modules/**`, `src/middlewares/
    - [8.4 Schedule — `/api/schedule`](#84-schedule--apischedule)
    - [8.5 Reminders — `/api/reminders`](#85-reminders--apireminders)
    - [8.6 Attendance (public) — `/api/attendance`](#86-attendance-public--apiattendance)
+   - [8.6A Roster — `/api/roster`](#86a-roster--apiroster)
    - [8.7 Attendance announcement — `/api/announcement`](#87-attendance-announcement--apiannouncement)
    - [8.8 Daily status — `/api/daily-status`](#88-daily-status--apidaily-status)
    - [8.9 Root](#89-root)
@@ -1932,12 +1933,14 @@ Returns the current attendance submission window projection.
     "timezone": "Asia/Dhaka", // reported timezone constant
     "nextOpenAt": "2026-08-19T12:00:00.000Z", // next future opening instant (null when enabled: false)
     "closesAt": "2026-08-18T17:59:00.000Z", // closing instant for currently open window (null when isOpen: false)
+    "emailVerificationRequired": false, // true = the email must be on the enrolled student list
   },
 }
 ```
 
 - **`nextOpenAt`** is reported even while the window is currently open (naming the _next_ occurrence). It is `null` only when `enabled` is `false`.
 - **`closesAt`** is populated only when `isOpen` is `true`; otherwise it is `null`.
+- **`emailVerificationRequired`** tells the form whether the email field is checked against the enrolment roster on submit. Read it on mount and label the field accordingly ("use the email you enrolled with") — otherwise a student first learns the rule from a 403 after filling the whole form. It is a **bare boolean**: the endpoint exposes no roster entry, no count, and no editor identity, and it still accepts no parameters, so there is nothing here to probe an address against. See §8.6A.
 - The response carries **no admin-shaped fields**: no `updatedBy`, no `scheduler`, no `lastRun`, and no Discord channel or guild ID.
 
 #### 🔓 `GET /api/attendance/verify-user?username=…`
@@ -2012,11 +2015,129 @@ A malformed handle is a **400** (Zod). The form must tell "fix your typing" (400
 | Status  | Cause                                           | Notes                                                                                        |
 | ------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | 400     | Zod                                             | field-level; map `errorDetails.issues` to inputs                                             |
+| **403** | email not on the enrolled student list          | only when `emailVerificationRequired` is `true`. Point the student at the **email** field    |
 | **404** | handle unknown or the member has left the guild | on the **write** path not-found is a genuine failure, unlike `verify-user`                   |
 | 409     | already submitted today                         | message names the date: `You have already submitted your attendance for today (2026-08-17).` |
 | 429     | rate limit                                      | 5 per 15 min per IP                                                                          |
 
 The 409 is enforced by a database unique constraint (`(memberId, attendanceDate)`), not a read-then-write check — two simultaneous submissions still produce exactly one row.
+
+**403 and 404 are different fields.** A 403 means the _email address_ is not on the enrolment roster; a 404 means the _Discord handle_ is in no configured server. Branching on the status is the only way to tell the student which input to fix — do not collapse them into one "could not verify you" message.
+
+The two checks are **independent**: the roster stores no Discord handle, and the matched entry does not have to describe the same person as the Discord account. What an accepted submission asserts is that an enrolled person's address was supplied _and_ that the submitting account is in a server — not that this particular enrolled person submitted.
+
+The roster check runs **first**, so a request failing both is told about the email, and once that is corrected is told about the handle. A 403 never writes anything, in any server.
+
+A refusal is deliberately identical whether the address was never enrolled or was removed from the roster — that collapse is what stops the endpoint being used to confirm who used to be enrolled. Never show a "did you mean…" suggestion here; the API sends none.
+
+When `emailVerificationRequired` is `false` (the default, and the state until an admin arms it) the roster is not consulted at all and `submit` behaves exactly as it did before the feature existed.
+
+---
+
+### 8.6A Roster — `/api/roster`
+
+All routes 🔐 **ADMIN**, without exception. This is the enrolment list — names, email addresses and phone numbers for every enrolled student — plus the switch that arms the email check on `POST /attendance/submit`. Nothing here is student-facing, and no route on it may ever be made public.
+
+**The roster is global.** It carries no `guildId` and takes no server parameter. An email address identifies a _person_, not a membership, so someone enrolled in the program is enrolled everywhere — the same reasoning that keeps `guildId` off `reminder_logs` (§5A).
+
+#### Turning the feature on, in order
+
+| #   | Call                                                | What to check                                                      |
+| --- | --------------------------------------------------- | ------------------------------------------------------------------ |
+| 1   | `POST /roster/import`                               | `data.skipped` is 0, or the listed rows are ones you meant to skip |
+| 2   | `GET /roster/settings`                              | `activeEntries` matches the size of your cohort                    |
+| 3   | `PATCH /roster/settings` `{ "enforceEmail": true }` | takes effect on the next submission, no restart                    |
+
+**Rollback is `PATCH /roster/settings { "enforceEmail": false }`** — one request, immediate, no deploy. Disabling always succeeds whatever the roster holds.
+
+#### 🔐 `POST /roster/import`
+
+`multipart/form-data`, one file in the **`file`** field. Accepts `.xlsx` and `.csv`.
+
+Columns are located by **header name, never by position**, matched case-insensitively after trimming:
+
+| Field            | Accepted headings                                                               |
+| ---------------- | ------------------------------------------------------------------------------- |
+| email (required) | `email`, `email address`, `e-mail`, `e mail`, `mail`                            |
+| name (required)  | `name`, `full name`, `student name`, `fullname`                                 |
+| phone (optional) | `phone`, `phone number`, `mobile`, `mobile number`, `contact`, `contact number` |
+
+Unrecognized columns (batch, roll number, section) are ignored. Blank rows are skipped silently.
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Imported 487 of 500 row(s); 13 skipped",
+  "data": {
+    "importId": "…",
+    "fileName": "batch-11.xlsx",
+    "totalRows": 500,
+    "created": 412,
+    "updated": 75,
+    "skipped": 13,
+    "duplicates": 2,
+    "duplicateRowsCollapsed": 2,
+    "rejectedRows": [
+      { "rowNumber": 44, "reason": "Invalid email address: rakib@@x.com" },
+    ],
+    "duplicateAddresses": [
+      { "email": "rakib@example.com", "rowNumbers": [12, 40] },
+    ],
+    "batchFailures": [],
+  },
+}
+```
+
+- **Partial success is a 200, not an error.** The valid rows really did load; an error status would say nothing happened and invite a re-upload. `created + updated + skipped + duplicateRowsCollapsed` always equals `totalRows` — the last term counts rows absorbed by an earlier row with the same address, which are neither written separately nor rejected.
+- **`rejectedRows` carries the sheet's own row numbers** so the admin can fix those lines and re-upload.
+- **An import upserts by email and can never remove anybody.** Entries absent from the sheet are left untouched and stay active, so a truncated or wrong-sheet upload adds noise rather than locking students out. Re-importing a deactivated person reinstates them, which makes re-upload idempotent and safe to retry.
+- **`duplicateAddresses`** reports an address repeated inside one sheet. The **last** row wins; the repetition is surfaced because it is usually a mistake in the source spreadsheet.
+
+| Status | Cause                                     | Notes                                                                                                                |
+| ------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 400    | no file, or wrong field name              | field must be `file`                                                                                                 |
+| 400    | header row has no email or no name column | message names the headers found and the accepted headings. **Nothing is written** — every row would fail identically |
+| 400    | legacy binary `.xls`                      | message says to re-save as `.xlsx`; the parser cannot read that format                                               |
+| 400    | file over the size limit (default 5 MB)   | enforced while the upload streams, so it is never parsed                                                             |
+| 400    | more rows than the limit (default 20 000) | a blast-radius control; nothing is written                                                                           |
+
+#### 🔐 `GET /roster?search=&status=&page=&limit=`
+
+`status` is `active` (default), `inactive`, or `all`. `search` matches name or email, case-insensitive and partial. `limit` maxes at 200. `meta.total` counts everything matching the same filter.
+
+#### 🔐 `PATCH /roster/:id`
+
+Correct one entry: `name`, `email`, `phone` (send `null` to clear the phone). At least one field required. Changing the email to one another entry holds is a **409** — never a silent merge.
+
+#### 🔐 `DELETE /roster/:id` and `PATCH /roster/:id/restore`
+
+`DELETE` **deactivates**; it never hard-deletes, so the removal is reversible and the audit trail survives. Only active entries count as enrolled. `restore` reinstates.
+
+#### 🔐 `GET /roster/imports?page=&limit=`
+
+Import history, most recent first: file name, the administrator, the time, and the counts. This is the audit trail for the only write path that can change who may submit attendance — check it first when the roll is not what someone expected.
+
+#### 🔐 `GET /roster/settings` and `PATCH /roster/settings`
+
+```jsonc
+{
+  "data": {
+    "enforceEmail": false, // is the email check armed?
+    "activeEntries": 2140, // how many people it would admit
+    "updatedAt": "2026-08-19T13:00:00.000Z",
+    "updatedBy": { "id": "…", "name": "Admin", "email": "admin@example.com" },
+  },
+}
+```
+
+`activeEntries` is returned next to the flag so the effect of arming is visible **before** it is armed.
+
+| Status | Cause                               | Notes                                                                                                                                                            |
+| ------ | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | enabling while `activeEntries` is 0 | refused on purpose: arming an empty gate refuses **every** student in every server with a correct-looking 403, and the only symptom is submissions going to zero |
+
+There is deliberately **no** "skip the check when the roster is empty" behaviour on the submission path. The guard sits here, on the arming step, where a human reads the refusal — a gate that disarms itself under a condition nobody is watching is a gate nobody can reason about.
 
 ---
 
@@ -2666,6 +2787,8 @@ Print this next to the monitor.
 - [ ] Zod error messages arrive **Title Cased**. Map `errorDetails.issues[].path` to your own copy.
 - [ ] Error bodies have no `statusCode` field, and the useful text is sometimes in `errorMessage` rather than `message`.
 - [ ] `GET /attendance/verify-user` answers **200 for an unknown handle**; `POST /submit` answers **404**. Branch on `data.verified`, not the status code.
+- [ ] `POST /submit` answers **403** when the email is not on the enrolment roster and **404** when the Discord handle is in no server. Different fields, different messages — do not collapse them.
+- [ ] Read **`emailVerificationRequired`** from `GET /attendance/window` on form mount and label the email field before the student fills the form.
 - [ ] Never derive `YYYY-MM-DD` with `toISOString()` — use the Asia/Dhaka `Intl` helper (§5).
 - [ ] `date` on `POST /reminders/send` is **required and never inferred**. Always show the `/targets` preview and a confirmation first.
 - [ ] The reminder message cap is **1970** characters, not 2000.

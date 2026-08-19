@@ -39,6 +39,11 @@ model User {
   // message the program posts every evening must outlive the account.
   announcementTemplates AnnouncementTemplate[]
   announcementLogs      AnnouncementLog[]
+  // Roster spreadsheets this admin uploaded, and the enforcement setting they
+  // last changed. Audit only, nullable on the other side for the same reason:
+  // the record of who changed who may submit must outlive the account.
+  rosterImports  RosterImport[]
+  rosterSettings RosterSetting[]
 
   @@map("users")
 }
