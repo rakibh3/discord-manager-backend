@@ -2394,11 +2394,15 @@ A malformed handle is a **400** (Zod). The form must tell "fix your typing" (400
       { "guildId": "146…", "label": "Batch A", "recorded": true,  "alreadySubmitted": false },
       { "guildId": "246…", "label": "Batch B", "recorded": true,  "alreadySubmitted": false },
     ],
+    "reportQueued": false,
+    "attendanceRecorded": true,
   },
 }
 ```
 
 The submission is recorded in **every** configured server the handle belongs to, in one transaction. The student submits once; the form does not ask them to pick a server. Each entry in `servers[]` carries `recorded` (was written by this request) and `alreadySubmitted` (was already on file from an earlier submission).
+
+`reportQueued` and `attendanceRecorded` are both `true`/`false` flags exposing the two separate outcomes the form has to render differently. For a normal 201 response both are `true` (an attendance row was written) and `false` (no report was filed). See "Discord-pairing mismatch" below for the 202 / `reportQueued: true` / `attendanceRecorded: false` branch.
 
 | Status  | Cause                                                                                  | Notes                                                                                        |
 | ------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -2407,6 +2411,7 @@ The submission is recorded in **every** configured server the handle belongs to,
 | **403** | submitted handle does not match the recorded pairing                                  | see "Discord-pairing mismatch" below                                                         |
 | **404** | handle unknown or the member has left the guild                                        | on the **write** path not-found is a genuine failure, unlike `verify-user`                   |
 | 409     | already submitted today                                                                | message names the date: `You have already submitted your attendance for today (2026-08-17).` |
+| **202** | `cannotEnterRealDiscordUsername: true` on a paired-but-mismatched submission          | report filed; attendance NOT recorded. Body carries `attendanceRecorded: false` and `reportQueued: true`. See "Discord-pairing mismatch" below |
 | 429     | rate limit                                                                             | 5 per 15 min per IP                                                                          |
 
 The 409 is enforced by a database unique constraint (`(memberId, attendanceDate)`), not a read-then-write check — two simultaneous submissions still produce exactly one row.
@@ -2425,15 +2430,51 @@ When `emailVerificationRequired` is `false` (the default, and the state until an
 
 ```
 This Discord username does not match the one already on file for your email address.
-Please enter the correct Discord username, or check the box below to record
-attendance with your current username and notify an administrator.
+Please enter the correct Discord username, or check the box below to file
+a Discord pairing mismatch report for an administrator to review.
 ```
 
-The form's "I cannot enter my real Discord username" checkbox maps to `cannotEnterRealDiscordUsername`. When set to `true` on a refused submission, the submission is accepted as today (attendance is recorded, response shape unchanged), and a discord-pairing-mismatch report is queued against the pairing for an administrator to review. The public response is **byte-for-byte the same** as it would have been without the flag — no paired-account identifier, no count of reports, no record that a report was created.
+The form's "I cannot enter my real Discord username" checkbox maps to `cannotEnterRealDiscordUsername`. When set to `true` on a refused submission, the submission is **NOT recorded as today's attendance**. Instead, a discord-pairing-mismatch report is queued against the pairing for an administrator to review, and the response is a **202 Accepted** with `attendanceRecorded: false` and `reportQueued: true`. The student is told the report was filed and that an admin will review; once the admin **reassigns** the pairing, the student's next submission goes through normally.
 
+This is a deliberate change from the previous behaviour. The old behaviour accepted the flag as a recorded attendance AND filed a report in parallel, but the student-facing card was indistinguishable from a normal submit — so the student never knew the report existed, and the next submission still hit the same 403 until the admin reviewed. The report-only path makes the handoff explicit: today's attendance is NOT recorded, the report is queued, and the student can submit cleanly tomorrow once the admin finishes the review.
+
+**202**
+
+```jsonc
+{
+  "success": true,
+  "statusCode": 202,
+  "message": "Discord pairing mismatch report filed for 2026-08-17. An administrator will review it; once the pairing is confirmed, your next submission will be recorded as today's attendance.",
+  "data": {
+    "attendanceDate": "2026-08-17",
+    "submittedAt": "2026-08-17T14:22:31.000Z", // the instant the report was filed, not an attendance row
+    "member": {
+      "id": "…",
+      "discordUserId": "…",
+      "discordUsername": "rakib_new", // the submitted handle, not the on-file one
+      "displayName": "Rakib",
+      "avatarUrl": "…",
+    },
+    "servers": [
+      { "guildId": "146…", "label": "Batch A", "recorded": false, "alreadySubmitted": false },
+      { "guildId": "246…", "label": "Batch B", "recorded": false, "alreadySubmitted": false },
+    ],
+    "reportQueued": true,
+    "attendanceRecorded": false,
+  },
+}
+```
+
+- The status code is **202 Accepted**, not 201 — the work (recording today's attendance) is accepted as pending the administrator's review. Clients that branch on the status code read `attendanceRecorded` to know which card to render.
+- `reportQueued: true` is the only signal back to the student that a report was filed. The student cannot view the report, the admin's notes, or its id.
+- `attendanceRecorded: false` is the explicit "today's attendance is NOT recorded" signal. The form must render a clearly different success card on this branch — the standard "Attendance recorded" card would be a lie.
+- `servers[].recorded` is `false` for every server, because no attendance row was written by this request.
+- A second flag-set submission for the same entry on the same Dhaka day, while the first report is still open, returns the same 202 with `reportQueued: true` (the report was already on file; the partial-unique-index on `(roster_entry_id, submission_dhaka_date)` filtered by `status = 'OPEN'` prevents a duplicate row, and the service treats the conflict as a no-op).
 - The flag is rejected as a 400 if it arrives as anything other than a JSON boolean (string, number, etc.).
 - The flag is ignored (treated as `false`) when the submitted handle resolves to no current guild member — the membership refusal still wins.
-- The flag is consumed only when the entry is paired and the handle differs. Unpaired entries are recorded as before.
+- The flag is consumed only when the entry is paired and the handle differs. Unpaired entries are recorded as before, with `reportQueued: false` and `attendanceRecorded: true`.
+
+**Branch on `data.attendanceRecorded`, not on the HTTP status alone.** A new client should switch on the boolean; an old client that only branches on the 201/202 split still works because the standard success card is 201 / `attendanceRecorded: true` and the report-only card is 202 / `attendanceRecorded: false`.
 
 Listing and final-action endpoints for administrators live at `/api/roster/discord-mismatch-reports` (§8.6B).
 
@@ -2698,6 +2739,8 @@ CSV attachment with the same query surface as the listing (minus paging — the 
 ### 8.6B Discord pairing mismatch reports — `/api/roster/discord-mismatch-reports`
 
 All routes 🔐 **ADMIN**. Reports of attendance submissions where the submitted handle did not match the recorded Discord pairing for the same email, filed when the student ticked the `cannotEnterRealDiscordUsername` flag on `POST /api/attendance/submit` (§8.6).
+
+When a report is filed, the student's submission is **NOT recorded as today's attendance**. The student gets a 202 Accepted with `attendanceRecorded: false` and `reportQueued: true`. After the admin **reassigns** the report, the student's next submission goes through normally and is recorded as today. The only signal back to the student that a report was filed is the 202 status code combined with `attendanceRecorded: false` and `reportQueued: true` on the response — the student cannot view the report, the admin's notes, or its id.
 
 The first report for an entry on a given Dhaka date is recorded; subsequent mismatched submissions on the same day are absorbed by the partial unique index on `(roster_entry_id, submission_dhaka_date)` filtered by `status = 'OPEN'` and do not create duplicate rows.
 

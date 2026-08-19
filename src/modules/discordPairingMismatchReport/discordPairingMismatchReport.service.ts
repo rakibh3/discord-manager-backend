@@ -2,7 +2,6 @@ import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
 import {
-  MISMATCH_REPORT_REASON,
   MISMATCH_REPORT_STATUS,
   type MismatchReportStatus,
   REPORT_ACTION,
@@ -18,7 +17,6 @@ import {
 } from '@/repositories/discordPairingMismatchReport.repository';
 import { memberRepository } from '@/repositories/member.repository';
 import { rosterRepository } from '@/repositories/roster.repository';
-import { createLogger } from '@/utils/logger';
 
 /**
  * Business rules for the discord-pairing-mismatch reports.
@@ -31,8 +29,6 @@ import { createLogger } from '@/utils/logger';
  * data and a tagged union, deciding that `pairing_changed_under_us` is a
  * 409 belongs to this layer.
  */
-
-const logger = createLogger('DiscordPairingMismatchReport');
 
 /**
  * The view-model the listing endpoint hands to the controller.
@@ -67,7 +63,8 @@ const toListItem = (row: TReportRowWithJoins): TMismatchReportListItem => ({
   entryEmail: row.rosterEntry.email,
   pairedDiscordUsername: row.pairedAccountHandle?.discordUsername ?? null,
   pairedDisplayName: row.pairedAccountHandle?.displayName ?? null,
-  submittingDiscordUsername: row.submittingAccountHandle?.discordUsername ?? null,
+  submittingDiscordUsername:
+    row.submittingAccountHandle?.discordUsername ?? null,
   submittingDisplayName: row.submittingAccountHandle?.displayName ?? null,
   submittedHandle: row.submittedHandle,
   reason: row.reason,
@@ -110,7 +107,9 @@ export type TMismatchReportListResult = {
  * The page of mismatch reports for the admin dashboard, with the
  * pagination metadata the controller hands back to the client.
  */
-const listReports = async (filters: TListFilters): Promise<TMismatchReportListResult> => {
+const listReports = async (
+  filters: TListFilters,
+): Promise<TMismatchReportListResult> => {
   const { rows, total } =
     await discordPairingMismatchReportRepository.list(filters);
 
@@ -166,10 +165,7 @@ const mapReassignResultToAppError = (
 ): AppError => {
   switch (result.kind) {
     case 'not_found':
-      return new AppError(
-        httpStatus.NOT_FOUND,
-        'Mismatch report not found',
-      );
+      return new AppError(httpStatus.NOT_FOUND, 'Mismatch report not found');
 
     case 'not_open':
       return new AppError(
@@ -186,7 +182,10 @@ const mapReassignResultToAppError = (
     default: {
       const _exhaustive: never = result;
 
-      return new AppError(httpStatus.INTERNAL_SERVER_ERROR, String(_exhaustive));
+      return new AppError(
+        httpStatus.INTERNAL_SERVER_ERROR,
+        String(_exhaustive),
+      );
     }
   }
 };
@@ -235,8 +234,9 @@ const actOnReport = async (input: {
   }
 
   if (input.action === REPORT_ACTION.REASSIGN) {
-    const report =
-      await discordPairingMismatchReportRepository.findById(input.reportId);
+    const report = await discordPairingMismatchReportRepository.findById(
+      input.reportId,
+    );
 
     if (!report) {
       return {
@@ -256,7 +256,9 @@ const actOnReport = async (input: {
           httpStatus.UNPROCESSABLE_ENTITY,
           `The submitted Discord account is not a current member of any configured server (${getConfiguredGuilds()
             .map((guild) => guildLabel(guild))
-            .join(', ')}); reassign it only after the student has rejoined, or dismiss the report instead`,
+            .join(
+              ', ',
+            )}); reassign it only after the student has rejoined, or dismiss the report instead`,
         ),
       };
     }
@@ -301,52 +303,6 @@ const actOnReport = async (input: {
 };
 
 /**
- * The flag-set report writer invoked from the attendance submission
- * service after the attendance row has committed.
- *
- * Three conditions must hold for a report to be recorded, and the
- * caller checks all three before calling:
- *   1. The submitted address is held by an active roster entry.
- *   2. That entry is paired with a Discord account.
- *   3. The submitted handle, normalized, is not the paired account.
- *   4. The flag `cannotEnterRealDiscordUsername` was set to `true`.
- *
- * The function absorbs every error and never throws. The same pattern
- * `recordRosterPairing` uses for the existing first-write rule:
- * bookkeeping outside the attendance path can never make a student
- * retry. The student is not told the report was created — the public
- * response is byte-for-byte the shape it would have been without the
- * flag.
- */
-const recordReportIfFlagged = async (input: {
-  rosterEntryId: string;
-  pairedDiscordUserId: string;
-  submittingDiscordUserId: string;
-  submittedHandle: string;
-  submissionDhakaDate: string;
-}): Promise<void> => {
-  try {
-    await discordPairingMismatchReportRepository.createIfAbsent({
-      rosterEntryId: input.rosterEntryId,
-      pairedAccountId: input.pairedDiscordUserId,
-      submittingAccountId: input.submittingDiscordUserId,
-      submittedHandle: input.submittedHandle,
-      reason: MISMATCH_REPORT_REASON.HANDLE_MISMATCH_PAIRING,
-      submissionDhakaDate: input.submissionDhakaDate,
-    });
-  } catch (error) {
-    // The report write failed in some unexpected way. The attendance has
-    // already committed and the response is going out as a success; the
-    // most we can do is log it and move on. The student is not told.
-    logger.error(
-      `Discord pairing mismatch report write failed for entry ${input.rosterEntryId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-};
-
-/**
  * Resolves the open-report count for a page of engagement listing rows.
  *
  * Thin wrapper around the repository so the engagement listing module
@@ -370,6 +326,5 @@ void rosterRepository;
 export const discordPairingMismatchReportService = {
   listReports,
   actOnReport,
-  recordReportIfFlagged,
   openReportCountsByEntryIds,
 };

@@ -2,13 +2,16 @@ import { Prisma } from '@generated/prisma/client';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
-import { HANDLE_DOES_NOT_MATCH_PAIRING_MESSAGE } from '@/interface/discordPairingMismatchReport';
+import {
+  HANDLE_DOES_NOT_MATCH_PAIRING_MESSAGE,
+  MISMATCH_REPORT_REASON,
+} from '@/interface/discordPairingMismatchReport';
 import { getGuildConfig } from '@/lib/discord/client';
 import { guildLabel } from '@/lib/discord/fanout';
 import { isWithinWindow } from '@/lib/scheduler/channelSchedule.scheduler';
-import { discordPairingMismatchReportService } from '@/modules/discordPairingMismatchReport/discordPairingMismatchReport.service';
 import { attendanceRepository } from '@/repositories/attendance.repository';
 import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
+import { discordPairingMismatchReportRepository } from '@/repositories/discordPairingMismatchReport.repository';
 import {
   memberRepository,
   VerifiedMember,
@@ -87,6 +90,36 @@ export type TSubmitAttendancePayload = {
    * `submitAttendance` flow.
    */
   cannotEnterRealDiscordUsername?: boolean;
+};
+
+/**
+ * The shape of the `data` payload on the submit endpoint's 2xx response.
+ *
+ * Two top-level booleans split the two outcomes the controller renders
+ * differently:
+ *
+ *   - `attendanceRecorded: true` — today's attendance was written in
+ *     every configured server the handle belongs to. The standard
+ *     success card is shown.
+ *
+ *   - `attendanceRecorded: false`, `reportQueued: true` — the submitted
+ *     handle did not match the recorded pairing, and the student ticked
+ *     the "I cannot enter my real Discord username" box. Today's
+ *     attendance is NOT recorded. The discord-pairing-mismatch report is
+ *     filed and queued for an admin. The form renders a different
+ *     success card.
+ *
+ * Both booleans are exposed so the form never has to guess from the
+ * HTTP status alone — the 201 vs 202 split is a controller-level
+ * concern and a future refactor must not flip them silently.
+ */
+export type TSubmitAttendanceResult = {
+  attendanceDate: string;
+  submittedAt: Date;
+  member: VerifiedMember | null;
+  servers: TMemberServer[];
+  reportQueued: boolean;
+  attendanceRecorded: boolean;
 };
 
 /** The message an unknown or departed handle gets, from either endpoint. */
@@ -219,7 +252,9 @@ const recordRosterPairing = async (
   // handle now points at two accounts. Guessing attaches an enrolled person
   // to an account that is not theirs, and a wrong link reads as a healthy,
   // participating student — far worse than an honest "no link".
-  const distinctUserIds = new Set(members.map((member) => member.discordUserId));
+  const distinctUserIds = new Set(
+    members.map((member) => member.discordUserId),
+  );
 
   if (distinctUserIds.size !== 1) {
     logger.warn(
@@ -491,9 +526,8 @@ const assertHandleMatchesPairingIfPaired = async (params: {
   // going through the cache — a fresh read is cheap, and the same handle
   // resolved twice in the same request is more expensive in ambiguity
   // than in network.
-  const submittingMembers = await memberRepository.findActiveMembersByUsername(
-    submittedHandle,
-  );
+  const submittingMembers =
+    await memberRepository.findActiveMembersByUsername(submittedHandle);
 
   // A submitted handle that doesn't resolve to any member would have
   // already been refused by `resolveActiveMembers` earlier in the flow;
@@ -502,9 +536,8 @@ const assertHandleMatchesPairingIfPaired = async (params: {
     return { kind: 'ok' };
   }
 
-  const submittingDiscordUserId = resolveSubmittingDiscordUserId(
-    submittingMembers,
-  );
+  const submittingDiscordUserId =
+    resolveSubmittingDiscordUserId(submittingMembers);
 
   if (entry.discordUserId === submittingDiscordUserId) {
     // Match: the existing path runs unchanged.
@@ -530,7 +563,9 @@ const assertHandleMatchesPairingIfPaired = async (params: {
   };
 };
 
-const submitAttendance = async (payload: TSubmitAttendancePayload) => {
+const submitAttendance = async (
+  payload: TSubmitAttendancePayload,
+): Promise<TSubmitAttendanceResult> => {
   const attendanceDate = getDhakaDate();
 
   // The roster gate runs BEFORE membership resolution. It is one indexed read
@@ -584,6 +619,74 @@ const submitAttendance = async (payload: TSubmitAttendancePayload) => {
   }
 
   try {
+    // When the student ticked the "I cannot enter my real Discord username"
+    // box on a paired-but-mismatched entry, the submission is NOT recorded
+    // as today. Instead, the discord-pairing-mismatch report is filed
+    // against the pairing and the student is told the report is queued for
+    // an admin to review. Attendance is recorded only AFTER the admin
+    // reassigns the pairing (the next submission goes through normally).
+    //
+    // This is a deliberate change from the previous behaviour, where the
+    // flag was accepted as a recorded attendance AND a report was filed
+    // in parallel. The student-facing card on the old behaviour was
+    // indistinguishable from a normal submit, so the student never knew
+    // the report existed — and the next submission still hit the same
+    // 403 until the admin reviewed. The report-only path makes the
+    // handoff explicit: today's attendance is NOT recorded, the report
+    // is queued, and the student can submit cleanly tomorrow once the
+    // admin finishes the review.
+    if (mismatch.kind === 'mismatch_with_flag') {
+      try {
+        await discordPairingMismatchReportRepository.createIfAbsent({
+          rosterEntryId: mismatch.rosterEntryId,
+          pairedAccountId: mismatch.pairedAccountId,
+          submittingAccountId: mismatch.submittingAccountId,
+          submittedHandle: mismatch.submittedHandle,
+          reason: MISMATCH_REPORT_REASON.HANDLE_MISMATCH_PAIRING,
+          submissionDhakaDate: attendanceDate,
+        });
+      } catch (error) {
+        // The P2002 from the partial-unique-index on
+        // (roster_entry_id, submission_dhaka_date) is the expected
+        // duplicate-day case: the report was already filed earlier today.
+        // The index guarantees no second open report can exist for the
+        // same entry+date, so a P2002 here is the desired outcome — the
+        // student gets the same "report filed" message either way.
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== 'P2002'
+        ) {
+          logger.error(
+            `Discord pairing mismatch report write failed for entry ${mismatch.rosterEntryId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          throw error;
+        }
+      }
+
+      return {
+        attendanceDate,
+        // `submittedAt` is the moment the report was filed, not the moment
+        // an attendance row was written — today has no attendance row.
+        // Both are legitimate instants; the form does not currently render
+        // this field on the report-only card, but the shape is preserved
+        // so the existing success-component type can stay unchanged.
+        submittedAt: new Date(),
+        member: members[0] ?? null,
+        servers: members.map((member) => ({
+          guildId: member.guildId,
+          label: labelFor(member.guildId),
+          recorded: pending.some((candidate) => candidate.id === member.id),
+          alreadySubmitted: submittedMemberIds.has(member.id),
+        })),
+        // Today's attendance is NOT recorded. The student is told the
+        // report was filed and that an admin will review.
+        reportQueued: true,
+        attendanceRecorded: false,
+      };
+    }
+
     const created = await attendanceRepository.createAttendanceForMembers(
       pending.map((member) => ({
         memberId: member.id,
@@ -602,22 +705,6 @@ const submitAttendance = async (payload: TSubmitAttendancePayload) => {
     // been, with no new field and no new status code.
     await recordRosterPairing(payload, members);
 
-    // The mismatch report, when the flag was set, is recorded AFTER the
-    // attendance write commits. Same out-of-transaction pattern as the
-    // pairing write above — a bookkeeping step outside the attendance
-    // path must never make a student retry. Errors are absorbed by the
-    // helper: the response is byte-for-byte the shape it would have
-    // been without the flag.
-    if (mismatch.kind === 'mismatch_with_flag') {
-      await discordPairingMismatchReportService.recordReportIfFlagged({
-        rosterEntryId: mismatch.rosterEntryId,
-        pairedDiscordUserId: mismatch.pairedAccountId,
-        submittingDiscordUserId: mismatch.submittingAccountId,
-        submittedHandle: mismatch.submittedHandle,
-        submissionDhakaDate: attendanceDate,
-      });
-    }
-
     return {
       attendanceDate,
       submittedAt: created[0]?.submittedAt ?? new Date(),
@@ -630,6 +717,8 @@ const submitAttendance = async (payload: TSubmitAttendancePayload) => {
         recorded: pending.some((candidate) => candidate.id === member.id),
         alreadySubmitted: submittedMemberIds.has(member.id),
       })),
+      reportQueued: false,
+      attendanceRecorded: true,
     };
   } catch (error) {
     // P2002 is normally shaped by `globalErrorHandler`, but that handler has no
