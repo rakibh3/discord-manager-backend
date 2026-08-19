@@ -2,9 +2,11 @@ import { Prisma } from '@generated/prisma/client';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
+import { HANDLE_DOES_NOT_MATCH_PAIRING_MESSAGE } from '@/interface/discordPairingMismatchReport';
 import { getGuildConfig } from '@/lib/discord/client';
 import { guildLabel } from '@/lib/discord/fanout';
 import { isWithinWindow } from '@/lib/scheduler/channelSchedule.scheduler';
+import { discordPairingMismatchReportService } from '@/modules/discordPairingMismatchReport/discordPairingMismatchReport.service';
 import { attendanceRepository } from '@/repositories/attendance.repository';
 import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
 import {
@@ -20,6 +22,7 @@ import {
   getDhakaWeekday,
 } from '@/utils/dhakaDate';
 import { normalizeDiscordUsername } from '@/utils/discordUsername';
+import { createLogger } from '@/utils/logger';
 import { normalizeRosterEmail } from '@/utils/rosterEmail';
 
 /**
@@ -31,6 +34,8 @@ import { normalizeRosterEmail } from '@/utils/rosterEmail';
  * write path re-runs every check itself. Golden Rule 3 cannot be satisfied by a
  * browser.
  */
+
+const logger = createLogger('Attendance');
 
 /** One server a handle is a current member of, and its state for today. */
 export type TMemberServer = {
@@ -55,11 +60,33 @@ type TVerificationResult = {
   servers: TMemberServer[];
 };
 
+/** What the form is told about an email it asked about. */
+export type TEmailVerificationResult = {
+  verified: boolean;
+  /** Today's Dhaka date, so the form can name it in its own messages. */
+  attendanceDate: string;
+  /**
+   * Whether the roster gate is armed at all. Lets the form decide whether to
+   * even ask the question — same field the window endpoint exposes, kept here
+   * so a form that calls only this endpoint (e.g. one that already cached the
+   * window) still knows the gate's state without a second round trip.
+   */
+  emailVerificationRequired: boolean;
+};
+
 export type TSubmitAttendancePayload = {
   name: string;
   phone: string;
   email: string;
   discordUsername: string;
+  /**
+   * The student's "I cannot enter my real Discord username" flag. Optional;
+   * missing is treated as `false`. The flag is consumed only when the
+   * submitted address is held by an active, paired roster entry, and the
+   * submitted handle differs from the paired account — see the
+   * `submitAttendance` flow.
+   */
+  cannotEnterRealDiscordUsername?: boolean;
 };
 
 /** The message an unknown or departed handle gets, from either endpoint. */
@@ -78,6 +105,15 @@ const NOT_A_MEMBER_MESSAGE =
  */
 const NOT_ENROLLED_MESSAGE =
   'This email address is not on our enrolled student list. Please use the email address you enrolled with, or contact an admin.';
+
+/**
+ * The message a flagged submission gets when the upsert path refuses the
+ * write — the lane that "I cannot enter my real Discord username" was
+ * supposed to keep open. The form is told to either correct the handle or
+ * wait for an administrator to review the report.
+ */
+const HANDLE_DOES_NOT_MATCH_PAIRING_REFUSAL_MESSAGE =
+  HANDLE_DOES_NOT_MATCH_PAIRING_MESSAGE;
 
 /**
  * The roster gate: does this email address belong to an enrolled person?
@@ -144,6 +180,73 @@ const labelFor = (guildId: string): string => {
 };
 
 /**
+ * Records the email-to-account pairing on the roster, when the handle resolves
+ * unambiguously to one account and the address is held by an active, unlinked
+ * roster entry.
+ *
+ * Deliberately OUTSIDE the attendance transaction. That transaction is
+ * all-or-nothing across every server the handle belongs to, on purpose, so a
+ * student is never recorded in one server and missing in another. Putting a
+ * nice-to-have write inside it means a roster hiccup discards a real
+ * submission. The pairing is bookkeeping: the valuable work has already been
+ * committed by the time we get here.
+ *
+ * Runs REGARDLESS of `enforceEmail`. The gate decides whether an unenrolled
+ * address is refused; it has nothing to do with whether a matching address
+ * should be remembered. If the address is not on the roster the `updateMany`
+ * matches zero rows and costs one indexed statement.
+ *
+ * The pairing write is also SKIPPED when the entry is already paired with a
+ * DIFFERENT account — the new "first-write-wins, never overwritten" rule
+ * already holds, and a different account submitting under a paired address
+ * is refused by the mismatch check before getting here. The only path that
+ * reaches this write is the existing first-write-wins path (entry holds
+ * `discordUserId: null`) and the matching-account path (entry holds the
+ * same account, which the `updateMany` matches zero rows on, costing one
+ * indexed statement).
+ *
+ * Wrapped so no error escapes. A pairing write MUST NEVER change the
+ * response, delay the response, or refuse the submission — the response
+ * shape is unchanged byte-for-byte.
+ */
+const recordRosterPairing = async (
+  payload: TSubmitAttendancePayload,
+  members: VerifiedMember[],
+): Promise<void> => {
+  // An ambiguous handle (the directory is stale in one server) is not paired.
+  // Every member row resolved from one handle normally carries the same
+  // `discord_user_id` because they describe one account; disagreeing means the
+  // handle now points at two accounts. Guessing attaches an enrolled person
+  // to an account that is not theirs, and a wrong link reads as a healthy,
+  // participating student — far worse than an honest "no link".
+  const distinctUserIds = new Set(members.map((member) => member.discordUserId));
+
+  if (distinctUserIds.size !== 1) {
+    logger.warn(
+      `Ambiguous handle "${payload.discordUsername}" resolved to ${distinctUserIds.size} accounts; roster pairing skipped`,
+    );
+
+    return;
+  }
+
+  const discordUserId = members[0]!.discordUserId;
+
+  try {
+    await rosterRepository.linkEntryToAccount({
+      normalizedEmail: normalizeRosterEmail(payload.email),
+      discordUserId,
+    });
+  } catch (error) {
+    // The pairing write failed in some unexpected way. The submission has
+    // already been committed and the response is going out as a success; the
+    // most we can do is log it and move on. The student is not told.
+    logger.error(
+      `Roster pairing write failed for "${payload.email}": ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+};
+
+/**
  * Whether a P2002 is the one-attendance-per-member-per-day constraint firing,
  * as opposed to some other unique constraint on the same write.
  *
@@ -181,17 +284,6 @@ const isDuplicateAttendanceError = (
  * found is the routine answer here, and the form has to render something either
  * way. `member` is `null` whenever `verified` is false — no partial disclosure
  * about handles that are not active members.
- *
- * Takes NO email parameter, deliberately, and must not gain one. This endpoint
- * carries a 60/min per-IP budget on a process-local store; `submit` carries
- * 5/15min. Accepting an address here would turn it into a roster oracle
- * answering ~86,000 queries a day per IP — enumeration of the enrolment roll of
- * every student in the program. Behind the submit budget the same oracle costs
- * 480 a day and every probe is a logged write attempt. The roster is contact
- * data for thousands of people; it does not belong behind the cheap read
- * budget. The form is told UP FRONT that an enrolled address is required
- * through `emailVerificationRequired` on `GET /api/attendance/window`, which
- * exposes a boolean and nothing else.
  */
 const verifyUser = async (
   rawUsername: string,
@@ -240,6 +332,63 @@ const verifyUser = async (
 };
 
 /**
+ * Reports whether an email address is on the active enrolment roster.
+ *
+ * Mirror of `verifyUser` for the email field: returns a 200 with a boolean so
+ * the form can show a "please enter your registered email" message inline
+ * rather than waiting for the submit to refuse. Two reasons the answer is
+ * always 200 and never a thrown error:
+ *
+ *   1. The form renders on every keystroke (debounced), so a non-enrolled
+ *      address is the routine answer and must come back as data, not a 4xx.
+ *   2. Distinguishing "never enrolled" from "was removed" would let anyone
+ *      typing addresses confirm a particular person used to be on the roll.
+ *      Same disclosure concern the repository already collapses.
+ *
+ * When the roster gate is OFF, returns `verified: false` for every well-formed
+ * address — there is no roster check to pass, so "verified" is a deliberate
+ * `false` and the form is told the gate is off via `emailVerificationRequired:
+ * false`. The form renders no badge for this case (it checks
+ * `emailVerificationRequired` before deciding to draw anything at all) and the
+ * submit path also bypasses the gate, so the answer is consistent across
+ * read-time and write-time. Reporting `verified: true` here would mean
+ * "this address is enrolled" for a check that never ran — and would let the
+ * form show a ✅ on a random address.
+ *
+ * The endpoint is paired with `verifyUser` on the form. The same per-IP budget
+ * applies to BOTH endpoints, and they live behind separate limiters so an
+ * attacker cannot burn the email budget to probe addresses while the handle
+ * budget is fresh — each channel costs its own requests.
+ */
+const verifyEmail = async (
+  rawEmail: string,
+): Promise<TEmailVerificationResult> => {
+  // Resolved once and threaded through. A second call could land on the next
+  // day at 23:59:59.9 and report a date that disagrees with the gate below.
+  const attendanceDate = getDhakaDate();
+
+  const settings = await rosterRepository.getOrCreateSettings();
+
+  if (!settings.enforceEmail) {
+    return {
+      verified: false,
+      attendanceDate,
+      emailVerificationRequired: false,
+    };
+  }
+
+  const entry = await rosterRepository.findActiveEntryByEmail(
+    normalizeRosterEmail(rawEmail),
+  );
+
+  return {
+    verified: entry !== null,
+    attendanceDate,
+    emailVerificationRequired: true,
+  };
+};
+
+/**
  * Records today's attendance in EVERY configured server the handle belongs to.
  *
  * Re-verifies membership regardless of any earlier `verifyUser` call: the two
@@ -259,6 +408,128 @@ const verifyUser = async (
  * row, so a student who joined a second server after submitting gets the missing
  * one written instead of being refused outright.
  */
+/**
+ * The shape of a submitted Discord account's snowflake, used at the
+ * mismatch check to name what the report should record.
+ *
+ * Resolved once from the verified member rows, the same way
+ * `submitAttendance` resolves them. The mismatch check needs one
+ * snowflake, and the verified rows give us one per matched server —
+ * `submittingDiscordUserId` is the one every row carries because every
+ * `discord_members` row for the same handle describes the same account.
+ */
+const resolveSubmittingDiscordUserId = (members: VerifiedMember[]): string => {
+  const distinct = new Set(members.map((m) => m.discordUserId));
+
+  if (distinct.size !== 1) {
+    // Same handling as `recordRosterPairing`: an ambiguous handle is not
+    // paired. The mismatch check cannot proceed without a single
+    // snowflake — fall back to the first row's value rather than throwing,
+    // because the attendance path's own existing guard will log this case
+    // before getting to the report write.
+    return members[0]!.discordUserId;
+  }
+
+  return members[0]!.discordUserId;
+};
+
+/**
+ * The pre-attendance mismatch check.
+ *
+ * Runs AFTER the roster email gate has confirmed the address is enrolled
+ * and BEFORE any attendance row is written. The check is the one new
+ * thing standing between a paired student's "I cannot enter my real
+ * Discord username" submission and the existing first-write rule.
+ *
+ * Two paths diverge here:
+ *
+ *   - Entry holds a Discord account, submitted handle is the same account
+ *     → no-op; fall through to the existing acceptance path.
+ *
+ *   - Entry holds a Discord account, submitted handle differs
+ *     → if the flag is set, accept and record a mismatch report
+ *       AFTER the attendance transaction commits.
+ *     → if the flag is not set, refuse with the
+ *       `HANDLE_DOES_NOT_MATCH_PAIRING` outcome. No attendance row is
+ *       written, no pairing write is attempted.
+ *
+ *   - Entry holds NO Discord account
+ *     → the existing first-write rule still applies; the report is
+ *       NOT recorded (the flag is consumed only when an existing
+ *       pairing differs from the submitted handle).
+ */
+const assertHandleMatchesPairingIfPaired = async (params: {
+  payload: TSubmitAttendancePayload;
+  attendanceDate: string;
+}): Promise<
+  | { kind: 'ok' }
+  | {
+      kind: 'mismatch_with_flag';
+      rosterEntryId: string;
+      pairedAccountId: string;
+      submittingAccountId: string;
+      submittedHandle: string;
+    }
+> => {
+  const normalizedEmail = normalizeRosterEmail(params.payload.email);
+  const entry = await rosterRepository.findActiveEntryByEmail(normalizedEmail);
+
+  // Unpaired entry: the existing first-write rule still applies. No
+  // mismatch report is created — the flag is consumed only when an
+  // existing pairing differs from the submitted handle.
+  if (!entry || !entry.discordUserId) {
+    return { kind: 'ok' };
+  }
+
+  const submittedHandle = normalizeDiscordUsername(
+    params.payload.discordUsername,
+  );
+
+  // Resolve the submitting account's snowflake from the verified member
+  // rows. We only reach here once `resolveActiveMembers` has returned at
+  // least one row, so `findActiveMembersByUsername` is called instead of
+  // going through the cache — a fresh read is cheap, and the same handle
+  // resolved twice in the same request is more expensive in ambiguity
+  // than in network.
+  const submittingMembers = await memberRepository.findActiveMembersByUsername(
+    submittedHandle,
+  );
+
+  // A submitted handle that doesn't resolve to any member would have
+  // already been refused by `resolveActiveMembers` earlier in the flow;
+  // this branch exists only to keep the type narrow.
+  if (submittingMembers.length === 0) {
+    return { kind: 'ok' };
+  }
+
+  const submittingDiscordUserId = resolveSubmittingDiscordUserId(
+    submittingMembers,
+  );
+
+  if (entry.discordUserId === submittingDiscordUserId) {
+    // Match: the existing path runs unchanged.
+    return { kind: 'ok' };
+  }
+
+  // Mismatch: refuse, unless the student flagged that they cannot enter
+  // their real handle. The flag converts the refusal into an accepted
+  // submission with a report filed.
+  if (!params.payload.cannotEnterRealDiscordUsername) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      HANDLE_DOES_NOT_MATCH_PAIRING_REFUSAL_MESSAGE,
+    );
+  }
+
+  return {
+    kind: 'mismatch_with_flag',
+    rosterEntryId: entry.id,
+    pairedAccountId: entry.discordUserId,
+    submittingAccountId: submittingDiscordUserId,
+    submittedHandle,
+  };
+};
+
 const submitAttendance = async (payload: TSubmitAttendancePayload) => {
   const attendanceDate = getDhakaDate();
 
@@ -277,6 +548,17 @@ const submitAttendance = async (payload: TSubmitAttendancePayload) => {
   // address was supplied AND that the submitting account is in a configured
   // server. See the header of `prisma/schema/roster.prisma`.
   await assertEnrolled(payload.email);
+
+  // The pairing-mismatch check runs AFTER the roster gate (so we know the
+  // address is enrolled) and BEFORE the membership / attendance writes
+  // (so a refused submission writes no attendance row and never
+  // overwrites a stored pairing). When the flag is set, the refusal is
+  // converted to an accepted submission and a report is recorded after
+  // the attendance transaction commits.
+  const mismatch = await assertHandleMatchesPairingIfPaired({
+    payload,
+    attendanceDate,
+  });
 
   const members = await resolveActiveMembers(payload.discordUsername);
 
@@ -311,6 +593,30 @@ const submitAttendance = async (payload: TSubmitAttendancePayload) => {
         attendanceDate,
       })),
     );
+
+    // Record the email-to-account pairing after the attendance write commits.
+    // Outside the attendance transaction on purpose (that one is all-or-nothing
+    // across every server the handle belongs to); runs regardless of
+    // `enforceEmail`; must never change the response. Errors are absorbed by
+    // the helper — the response below is byte-for-byte the shape it has always
+    // been, with no new field and no new status code.
+    await recordRosterPairing(payload, members);
+
+    // The mismatch report, when the flag was set, is recorded AFTER the
+    // attendance write commits. Same out-of-transaction pattern as the
+    // pairing write above — a bookkeeping step outside the attendance
+    // path must never make a student retry. Errors are absorbed by the
+    // helper: the response is byte-for-byte the shape it would have
+    // been without the flag.
+    if (mismatch.kind === 'mismatch_with_flag') {
+      await discordPairingMismatchReportService.recordReportIfFlagged({
+        rosterEntryId: mismatch.rosterEntryId,
+        pairedDiscordUserId: mismatch.pairedAccountId,
+        submittingDiscordUserId: mismatch.submittingAccountId,
+        submittedHandle: mismatch.submittedHandle,
+        submissionDhakaDate: attendanceDate,
+      });
+    }
 
     return {
       attendanceDate,
@@ -431,6 +737,7 @@ const getAttendanceWindow = async (): Promise<TAttendanceWindowResult> => {
 
 export const attendanceService = {
   verifyUser,
+  verifyEmail,
   submitAttendance,
   getAttendanceWindow,
 };

@@ -52,12 +52,46 @@ model RosterEntry {
   // administrative repair.
   isActive Boolean @default(true) @map("is_active")
 
+  // The Discord account this enrolled person is paired with.
+  //
+  // An ACCOUNT snowflake, never a `discord_members.id` — one person in two
+  // servers is two member rows, and picking one would make the roster point at
+  // a membership rather than a person, reintroducing exactly the per-server
+  // split the missing `guild_id` exists to avoid. The account snowflake is
+  // the same key every dashboard query already groups on.
+  //
+  // NO foreign key. `discord_user_id` is unique *per server* in
+  // `discord_members`, not globally, so there is no unique parent column to
+  // reference. A person can also be linked before or after any particular
+  // membership row exists.
+  //
+  // Uniqueness is the constraint that stops one Discord account being counted
+  // as two enrolled people. Without it, two entries could record the same
+  // account and every report built on the pairing would double-count that
+  // person's work.
+  //
+  // `linked_at` is stored separately from `updated_at` — an import rewrites
+  // `updated_at` on every row it touches, so `updated_at` cannot answer
+  // "when did we learn this person's account".
+  discordUserId String?   @unique @map("discord_user_id")
+  linkedAt      DateTime? @map("linked_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Cross-side: pairing-mismatch reports filed against this entry. Cascade
+  // so deactivating the entry removes its reports — the same rule that already
+  // applies to attendance rows (where a deactivated entry's history is kept
+  // but its FK-cascade children go away).
+  discordPairingMismatchReports DiscordPairingMismatchReport[]
 
   // "Who is currently enrolled" — the shape both the settings guard's count and
   // the admin listing's active filter use.
   @@index([isActive])
+  // The paired/unpaired split used by the listing filter and the counts query.
+  // Predicate index so an `IS NULL` lookup serves the cohort this feature
+  // exists to surface — the outreach list of enrolled people with no account.
+  @@index([isActive, discordUserId])
   @@map("roster_entries")
 }
 

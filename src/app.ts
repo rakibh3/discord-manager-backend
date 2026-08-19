@@ -10,6 +10,7 @@ import { attendanceRouter } from '@/modules/attendance/attendance.routes';
 import { authRouter } from '@/modules/auth/auth.routes';
 import { dailyStatusRouter } from '@/modules/dailyStatus/dailyStatus.routes';
 import { discordRouter } from '@/modules/discord/discord.routes';
+import { discordPairingMismatchReportRouter } from '@/modules/discordPairingMismatchReport/discordPairingMismatchReport.routes';
 import { reminderRouter } from '@/modules/reminder/reminder.routes';
 import { rosterRouter } from '@/modules/roster/roster.routes';
 import { scheduleRouter } from '@/modules/schedule/schedule.routes';
@@ -47,6 +48,13 @@ app.use('/api/announcement', announcementRouter);
 // The enrolment roster and the switch that arms the email check. Admin-only —
 // it holds contact details for every enrolled student. See roster.routes.ts.
 app.use('/api/roster', rosterRouter);
+// Discord pairing mismatch reports — admin-only listing and final-action
+// endpoint. Sits behind the same administrator token middleware the rest of
+// the roster-admin surface uses.
+app.use(
+  '/api/roster/discord-mismatch-reports',
+  discordPairingMismatchReportRouter,
+);
 // The only unauthenticated router in the application — students have no
 // account to authenticate with. See attendance.routes.ts.
 app.use('/api/attendance', attendanceRouter);

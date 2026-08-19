@@ -100,6 +100,14 @@ const chunk = <T>(items: T[], size: number): T[][] => {
  * the whole class of failure: the worst outcome of a wrong file is extra people
  * on the roll, which refuses nobody.
  *
+ * **The `update` payload below names ONLY `name`, `phone`, and `isActive`. It
+ * MUST NOT name `discordUserId` or `linkedAt`.** A routine re-import would
+ * otherwise erase every learned pairing in bulk — the highest-consequence
+ * failure in this feature, silent, no error raised anywhere, and the only
+ * symptom a report that suddenly shows the whole roster as unreachable. New
+ * rows are created with both link fields NULL so the import never sources a
+ * pairing from the sheet either.
+ *
  * Never throws. A chunk that fails is counted and reported so the caller can
  * put it in the summary; the remaining chunks still run, because a partial
  * import is a success and the rows that did land really did land.
@@ -137,11 +145,14 @@ const upsertEntriesInChunks = async (
               phone: row.phone,
               // Re-importing someone reinstates them.
               isActive: true,
+              // FORBIDDEN: discordUserId, linkedAt. See header comment.
             },
             create: {
               email: row.email,
               name: row.name,
               phone: row.phone,
+              // FORBIDDEN: discordUserId, linkedAt — imports never source a
+              // pairing from the sheet.
             },
           }),
         ),
@@ -231,6 +242,67 @@ const updateEntry = async (
   input: TUpdateEntryInput,
 ): Promise<RosterEntry> =>
   prisma.rosterEntry.update({ where: { id }, data: input });
+
+/**
+ * Record the pairing between an enrolled email address and a Discord account.
+ *
+ * One `updateMany` scoped `{ email, isActive: true, discordUserId: null }` —
+ * the `discordUserId: null` in the WHERE is the CLAIM, not a precondition.
+ * Same scoped-claim shape as `markReminderProcessing` (scoped to `PENDING`)
+ * and `reclaimFailedDay` (scoped to `FAILED`): a read-then-write "is it
+ * already linked?" check does not survive two students submitting in the same
+ * millisecond, and this is a path that sees a burst every evening.
+ *
+ * The companion `@unique` on `discord_user_id` handles the other direction:
+ * an account already linked to a *different* entry raises P2002, which is
+ * caught and translated to `claimed: false` rather than surfaced as an error —
+ * the account already belongs to another entry, which is a determination, not
+ * a failure. Without that translation the catch in the caller would have to
+ * know that P2002 here is a routine answer; better to handle it where it is
+ * caught.
+ *
+ * Returns whether a row was claimed. The caller (the attendance submit
+ * service) wraps this in a try/catch that swallows every other error so the
+ * pairing can never refuse or delay the submission.
+ *
+ * Repositories own Prisma and nothing else: no `AppError`, no HTTP status
+ * codes, no `req`. The boolean is the whole contract.
+ */
+const linkEntryToAccount = async ({
+  normalizedEmail,
+  discordUserId,
+}: {
+  normalizedEmail: string;
+  discordUserId: string;
+}): Promise<{ claimed: boolean }> => {
+  try {
+    const result = await prisma.rosterEntry.updateMany({
+      where: {
+        email: normalizedEmail,
+        isActive: true,
+        discordUserId: null,
+      },
+      data: {
+        discordUserId,
+        linkedAt: new Date(),
+      },
+    });
+
+    return { claimed: result.count > 0 };
+  } catch (error) {
+    // P2002 = the unique on `discord_user_id` fired: the account is already
+    // linked to a different entry. That is a determination, not an error.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      JSON.stringify(error.meta ?? {}).includes('discord_user_id')
+    ) {
+      return { claimed: false };
+    }
+
+    throw error;
+  }
+};
 
 /** Deactivate or reinstate. Never a delete — history keeps its row. */
 const setEntryActive = async (
@@ -323,6 +395,7 @@ export const rosterRepository = {
   findEntryById,
   updateEntry,
   setEntryActive,
+  linkEntryToAccount,
   createImportRecord,
   listImports,
   getOrCreateSettings,

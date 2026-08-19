@@ -1,13 +1,36 @@
 import { Buffer } from 'node:buffer';
 
 import { Prisma } from '@generated/prisma/client';
+import type { Response } from 'express';
 import httpStatus from 'http-status';
 
 import AppError from '@/errors/AppError';
+import { getConfiguredGuilds } from '@/lib/discord/client';
+import { guildLabel } from '@/lib/discord/fanout';
 import {
   rosterRepository,
   type TListEntriesQuery,
 } from '@/repositories/roster.repository';
+import {
+  PAIRING_STATE,
+  type PairingState,
+  ROSTER_STATUS,
+  type RosterStatus,
+  type RosterStatusCounts,
+  type RosterStatusQuery,
+  type RosterStatusRangeCounts,
+  type RosterStatusRangeQuery,
+  type RosterStatusRangeRow,
+  rosterStatusRepository,
+  type RosterStatusRow,
+  type RosterStatusSortColumn,
+} from '@/repositories/rosterStatus.repository';
+import { escapeCsvCell } from '@/utils/csv';
+import {
+  rangeDays,
+  resolvePeriod,
+  type TResolvedPeriod,
+} from '@/utils/dhakaDate';
 import { normalizeRosterEmail } from '@/utils/rosterEmail';
 import {
   HEADER_ALIASES,
@@ -298,6 +321,430 @@ const updateSettings = async (
   };
 };
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Roster engagement status
+ *
+ * The roster report's denominator is ENROLMENT, not Discord membership. It
+ * counts "who that we enrolled is doing the work", which is a different
+ * question from the daily-status dashboard's "who in our servers is behind".
+ *
+ * Roster totals will NOT equal dashboard totals, and that is the same class of
+ * apparent bug as "combined totals do not equal the sum of `byServer`" — see
+ * the file header of `rosterStatus.repository.ts` and CLAUDE.md. The service
+ * surfaces both views; reconciling them would be a mistake.
+ *
+ * Period handling is shared with the daily-status service: a date XOR a
+ * from/to pair, an optional weekday set, the same 92-day cap. A weekday set
+ * that leaves zero counted days is a 400, with the same message the dashboard
+ * uses — a denominator of zero would make every paired entry fully complete
+ * by vacuous truth.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** A server the paired account belongs to, resolved to a display label. */
+type TRosterStatusServer = {
+  guildId: string;
+  label: string;
+};
+
+/** Display name for a server, from configuration — never persisted. */
+const labelForGuildId = (guildId: string): string => {
+  const config = getConfiguredGuilds().find((g) => g.guildId === guildId);
+
+  return config ? guildLabel(config) : guildId;
+};
+
+/** Resolve raw server IDs to display labels at serialization time. */
+const serversOf = (guildIds: string[]): TRosterStatusServer[] =>
+  guildIds.map((guildId) => ({
+    guildId,
+    label: labelForGuildId(guildId),
+  }));
+
+/** Repository row → API row, shared by the listing and the export. */
+const toRosterStatusResult = (row: RosterStatusRow) => ({
+  entryId: row.entryId,
+  name: row.name,
+  email: row.email,
+  phone: row.phone,
+  isActive: row.isActive,
+  discordUserId: row.discordUserId,
+  linkedAt: row.linkedAt ? row.linkedAt.toISOString() : null,
+  servers: serversOf(row.guildIds),
+  serverCount: Number(row.serverCount),
+  discordUsername: row.discordUsername,
+  displayName: row.displayName,
+  isInGuild: row.isInGuild,
+  hasAttendance: row.hasAttendance,
+  hasDailyUpdate: row.hasDailyUpdate,
+  status: row.status,
+  /**
+   * The count of open discord-pairing-mismatch reports filed against this
+   * entry. Zero for unpaired entries without an additional read; positive
+   * values surface as a "needs attention" cue on the dashboard.
+   */
+  openDiscordPairingMismatchReports: row.openDiscordPairingMismatchReports,
+});
+
+/** Repository range row → API row. */
+const toRosterStatusRangeResult = (row: RosterStatusRangeRow) => ({
+  entryId: row.entryId,
+  name: row.name,
+  email: row.email,
+  phone: row.phone,
+  isActive: row.isActive,
+  discordUserId: row.discordUserId,
+  linkedAt: row.linkedAt ? row.linkedAt.toISOString() : null,
+  servers: serversOf(row.guildIds),
+  serverCount: Number(row.serverCount),
+  discordUsername: row.discordUsername,
+  displayName: row.displayName,
+  isInGuild: row.isInGuild,
+  daysInRange: Number(row.daysInRange),
+  attendanceDays: Number(row.attendanceDays),
+  updateDays: Number(row.updateDays),
+  completeDays: Number(row.completeDays),
+  incompleteDays: Number(row.incompleteDays),
+  missedBothDays: Number(row.missedBothDays),
+  missedUpdateDays: Number(row.missedUpdateDays),
+  rangeStatus: row.rangeStatus,
+  status: row.status,
+  /**
+   * The count of open discord-pairing-mismatch reports filed against this
+   * entry. Zero for unpaired entries without an additional read; positive
+   * values surface as a "needs attention" cue on the dashboard.
+   */
+  openDiscordPairingMismatchReports: row.openDiscordPairingMismatchReports,
+});
+
+/** Echoed meta for the range mode. Mirrors the dashboard's `rangeMetaOf`. */
+type TRosterStatusRangeMeta = {
+  mode: 'range';
+  from: string;
+  to: string;
+  daysOfWeek: number[] | null;
+  daysInRange: number;
+};
+
+type TRosterStatusDateMeta = {
+  mode: 'date';
+  date: string;
+};
+
+type TRosterStatusMeta = TRosterStatusDateMeta | TRosterStatusRangeMeta;
+
+/**
+ * Resolve the period to one of the two tagged forms the repository branches
+ * on, and enumerate the counted days for range mode.
+ *
+ * The schema has already refused every malformed combination, so this only has
+ * to read which of the two valid forms arrived and translate it.
+ *
+ * A weekday set that matches no day in the range would make every paired
+ * entry `ALL_COMPLETE` by vacuous truth — refused here as a 400.
+ */
+const resolveRosterStatusPeriod = (
+  period: TResolvedPeriod,
+): {
+  mode: 'date' | 'range';
+  days: string[];
+  meta: TRosterStatusMeta;
+} => {
+  if (period.mode === 'date') {
+    return {
+      mode: 'date',
+      days: [period.date],
+      meta: { mode: 'date', date: period.date },
+    };
+  }
+
+  const days = rangeDays(period);
+
+  if (days.length === 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `No days in ${period.from}..${period.to} match the selected days of week (${period.daysOfWeek?.join(', ')}). Widen the range or the weekday selection.`,
+    );
+  }
+
+  return {
+    mode: 'range',
+    days,
+    meta: {
+      mode: 'range',
+      from: period.from,
+      to: period.to,
+      daysOfWeek: period.daysOfWeek?.length ? period.daysOfWeek : null,
+      daysInRange: days.length,
+    },
+  };
+};
+
+/** A request resolved by the validation layer — see `roster.validation.ts`. */
+export type TRosterStatusPeriodInput = {
+  date?: string;
+  from?: string;
+  to?: string;
+  daysOfWeek?: number[];
+};
+
+/**
+ * Translate a validated query into the resolved period the service consumes.
+ *
+ * Pulled out so the listing, counts, and export endpoints all branch on the
+ * same tagged form — a single source of truth for "is this a date or a range".
+ */
+export const resolveRosterStatusPeriodInput = (
+  input: TRosterStatusPeriodInput,
+) => resolveRosterStatusPeriod(resolvePeriod(input));
+
+/** Counts for a date or a range. */
+const getStatusCounts = async (
+  input: TRosterStatusPeriodInput,
+): Promise<{ meta: TRosterStatusMeta; counts: RosterStatusCounts | RosterStatusRangeCounts }> => {
+  const resolved = resolveRosterStatusPeriodInput(input);
+
+  if (resolved.mode === 'date' && resolved.meta.mode === 'date') {
+    const counts = await rosterStatusRepository.getRosterStatusCounts(
+      resolved.meta.date,
+    );
+
+    return { meta: resolved.meta, counts };
+  }
+
+  if (resolved.mode === 'range' && resolved.meta.mode === 'range') {
+    const counts = await rosterStatusRepository.getRosterStatusRangeCounts(
+      resolved.days,
+    );
+
+    return { meta: resolved.meta, counts };
+  }
+
+  throw new AppError(httpStatus.INTERNAL_SERVER_ERROR, 'Period resolution mismatch');
+};
+
+/** Listing for a date or a range. */
+const getStatusPage = async (
+  input: RosterStatusQuery | RosterStatusRangeQuery,
+): Promise<{
+  meta: TRosterStatusMeta;
+  rows: ReturnType<typeof toRosterStatusResult>[] | ReturnType<typeof toRosterStatusRangeResult>[];
+  total: number;
+}> => {
+  if ('date' in input) {
+    const { rows, total } = await rosterStatusRepository.getRosterStatusPage(input);
+
+    return {
+      meta: { mode: 'date', date: input.date },
+      rows: rows.map(toRosterStatusResult),
+      total,
+    };
+  }
+
+  const { rows, total } = await rosterStatusRepository.getRosterStatusRangePage(input);
+
+  return {
+    meta: {
+      mode: 'range',
+      from: input.days[0] as string,
+      to: input.days[input.days.length - 1] as string,
+      daysOfWeek: null,
+      daysInRange: input.days.length,
+    },
+    rows: rows.map(toRosterStatusRangeResult),
+    total,
+  };
+};
+
+/** Same query surface as the listing — used by the export. */
+export type TRosterStatusExportQuery =
+  | (Omit<RosterStatusQuery, 'page' | 'limit'> & { format?: 'csv' | 'xlsx' })
+  | (Omit<RosterStatusRangeQuery, 'page' | 'limit'> & {
+      format?: 'csv' | 'xlsx';
+    });
+
+/**
+ * Stream filtered roster status rows as a CSV attachment.
+ *
+ * Honours the same period and filters as the listing. The deliverable for
+ * enrolled people with no Discord account on file: name, email, phone number,
+ * and the fact that nothing has been recorded for them — they cannot be DM'd
+ * because no account is known, so outreach happens by email outside this
+ * system.
+ *
+ * Format the system does not produce (`xlsx`) is refused with the same 400
+ * the daily-status export uses, naming the supported format. CSV escaping
+ * uses the shared `escapeCsvCell` from `src/utils/csv.ts` so exactly one
+ * escaper exists.
+ */
+const exportStatusCsv = async (
+  input: TRosterStatusExportQuery,
+  res: Response,
+): Promise<void> => {
+  // xlsx is the one format we explicitly do not produce yet — same message
+  // the daily-status export uses, so an admin sees one refusal rather than
+  // two. `NOT_IMPLEMENTED` is the status the daily-status export uses for
+  // the same reason.
+  if ('format' in input && input.format === 'xlsx') {
+    throw new AppError(
+      httpStatus.NOT_IMPLEMENTED,
+      'XLSX export format is not supported yet. Please use format=csv.',
+    );
+  }
+
+  if ('date' in input) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="roster-status-${input.date}.csv"`,
+    );
+
+    res.write(
+      [
+        'name',
+        'email',
+        'phone',
+        'discordUserId',
+        'linkedAt',
+        'discordUsername',
+        'displayName',
+        'servers',
+        'hasAttendance',
+        'hasDailyUpdate',
+        'status',
+      ].join(',') + '\n',
+    );
+
+    const batchSize = 500;
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { rows } = await rosterStatusRepository.getRosterStatusPage({
+        date: input.date,
+        pairingState: input.pairingState,
+        status: input.status,
+        search: input.search,
+        sortBy: input.sortBy,
+        sortDir: input.sortDir,
+        page,
+        limit: batchSize,
+      });
+
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        const line = [
+          escapeCsvCell(row.name),
+          escapeCsvCell(row.email),
+          escapeCsvCell(row.phone),
+          escapeCsvCell(row.discordUserId),
+          escapeCsvCell(row.linkedAt ? row.linkedAt.toISOString() : ''),
+          escapeCsvCell(row.discordUsername),
+          escapeCsvCell(row.displayName),
+          // Every server the paired account is in, in one cell — one row per
+          // enrolled person, so there is no single server column to fill.
+          escapeCsvCell(
+            row.guildIds.map((g) => labelForGuildId(g)).join(' | '),
+          ),
+          escapeCsvCell(row.hasAttendance),
+          escapeCsvCell(row.hasDailyUpdate),
+          escapeCsvCell(row.status),
+        ].join(',');
+
+        res.write(line + '\n');
+      }
+
+      if (rows.length < batchSize) hasMore = false;
+      else page += 1;
+    }
+
+    res.end();
+
+    return;
+  }
+
+  // Range mode.
+  const days = input.days;
+  const from = days[0] as string;
+  const to = days[days.length - 1] as string;
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="roster-status-${from}_to_${to}.csv"`,
+  );
+
+  res.write(
+    [
+      'name',
+      'email',
+      'phone',
+      'discordUserId',
+      'linkedAt',
+      'discordUsername',
+      'displayName',
+      'servers',
+      'daysInRange',
+      'attendanceDays',
+      'updateDays',
+      'completeDays',
+      'incompleteDays',
+      'missedBothDays',
+      'missedUpdateDays',
+      'rangeStatus',
+    ].join(',') + '\n',
+  );
+
+  const batchSize = 500;
+  let page = 1;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { rows } = await rosterStatusRepository.getRosterStatusRangePage({
+      days,
+      pairingState: input.pairingState,
+      status: input.status,
+      search: input.search,
+      sortBy: input.sortBy,
+      sortDir: input.sortDir,
+      page,
+      limit: batchSize,
+    });
+
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      const line = [
+        escapeCsvCell(row.name),
+        escapeCsvCell(row.email),
+        escapeCsvCell(row.phone),
+        escapeCsvCell(row.discordUserId),
+        escapeCsvCell(row.linkedAt ? row.linkedAt.toISOString() : ''),
+        escapeCsvCell(row.discordUsername),
+        escapeCsvCell(row.displayName),
+        escapeCsvCell(
+          row.guildIds.map((g) => labelForGuildId(g)).join(' | '),
+        ),
+        escapeCsvCell(row.daysInRange),
+        escapeCsvCell(row.attendanceDays),
+        escapeCsvCell(row.updateDays),
+        escapeCsvCell(row.completeDays),
+        escapeCsvCell(row.incompleteDays),
+        escapeCsvCell(row.missedBothDays),
+        escapeCsvCell(row.missedUpdateDays),
+        escapeCsvCell(row.rangeStatus),
+      ].join(',');
+
+      res.write(line + '\n');
+    }
+
+    if (rows.length < batchSize) hasMore = false;
+    else page += 1;
+  }
+
+  res.end();
+};
+
 export const rosterService = {
   importRoster,
   listRoster,
@@ -307,4 +754,17 @@ export const rosterService = {
   restoreEntry,
   getSettings,
   updateSettings,
+  getStatusCounts,
+  getStatusPage,
+  exportStatusCsv,
+  resolveRosterStatusPeriodInput,
+};
+
+// Re-export so the controller does not need a direct repository import.
+export {
+  PAIRING_STATE,
+  type PairingState,
+  ROSTER_STATUS,
+  type RosterStatus,
+  type RosterStatusSortColumn,
 };

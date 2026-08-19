@@ -14,6 +14,7 @@ import {
   type RangeStatus,
 } from '@/repositories/dailyStatus.repository';
 import { dailyUpdateRepository } from '@/repositories/dailyUpdate.repository';
+import { escapeCsvCell } from '@/utils/csv';
 import { rangeDays, type TDateRange } from '@/utils/dhakaDate';
 
 export type TDailyStatusFigures = {
@@ -518,31 +519,6 @@ const getMemberRangeStatus = async (
       serverLabel: labelFor(update.member.guildId),
     })),
   };
-};
-
-/**
- * Escape a CSV cell value to prevent formula injection and handle delimiters.
- */
-const escapeCsvCell = (value: unknown): string => {
-  if (value === null || value === undefined) return '';
-
-  let str = String(value);
-
-  // Prevent spreadsheet formula injection when opened in Excel/Sheets
-  if (/^[=+\-@]/.test(str)) {
-    str = `'${str}`;
-  }
-
-  if (
-    str.includes('"') ||
-    str.includes(',') ||
-    str.includes('\n') ||
-    str.includes('\r')
-  ) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-
-  return str;
 };
 
 /**

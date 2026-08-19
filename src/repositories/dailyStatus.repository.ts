@@ -58,6 +58,17 @@ import { countDhakaDaysInclusive } from '@/utils/dhakaDate';
  * fetch that mass-flagged members departed would silently shrink the
  * completion-rate denominator AND empty the reminder target list, with no
  * error anywhere. Never remove that guard.
+ *
+ * ── Second consumer: roster engagement status ──────────────────────────────
+ * `accountAttendanceSource`, `accountUpdateSource`, and `rangeCtes` are
+ * EXPORTED so `src/repositories/rosterStatus.repository.ts` can build the
+ * roster engagement report on the SAME definitions of "submitted attendance"
+ * and "posted a daily update". Two implementations of those facts would
+ * answer differently the first time either was touched, and an administrator
+ * comparing the roster report against the dashboard would have no way to tell
+ * which was right. The shared sources are still keyed on `discord_user_id`
+ * with no `guild_id` and no `is_in_guild` filter, and that stays true on the
+ * roster side: an enrolled person who posted in any server has done the work.
  */
 
 /** The four buckets a person falls into on a given day. */
@@ -188,6 +199,12 @@ const SORT_DIRECTIONS = {
  * left one server still submitted, and the attendance they filed in server A
  * is the same attendance when viewed from server B.
  */
+/**
+ * EXPORTED — reused by `rosterStatus.repository.ts` so the roster engagement
+ * report and this dashboard derive "submitted attendance" from the same query.
+ * Any change here ripples to the roster report; check both consumers before
+ * renaming or scoping this further.
+ */
 const accountAttendanceSource = (date: string) => Prisma.sql`
   SELECT DISTINCT ON (o.discord_user_id)
     o.discord_user_id,
@@ -209,6 +226,8 @@ const accountAttendanceSource = (date: string) => Prisma.sql`
  * keyed by account and scoped to no server, so posting in one server satisfies
  * the day everywhere. `DISTINCT` because someone who posted five messages must
  * produce one row, not five.
+ *
+ * EXPORTED — reused by `rosterStatus.repository.ts`; see the file header.
  */
 const accountUpdateSource = (date: string) => Prisma.sql`
   SELECT DISTINCT o.discord_user_id
@@ -733,6 +752,8 @@ const withinCountedDays = (column: Prisma.Sql, days: string[]): Prisma.Sql => {
  * where date mode takes that one day's EARLIEST. These are contact details for
  * reaching a student, so over a span the freshest wins; within a single day
  * the earliest is the submission itself.
+ *
+ * EXPORTED — reused by `rosterStatus.repository.ts`; see the file header.
  */
 const rangeCtes = (days: string[]): Prisma.Sql => Prisma.sql`
   WITH day_facts AS (
@@ -1274,6 +1295,13 @@ const listReminderTargets = async ({
     ORDER BY dm.guild_id ASC, dm.discord_username ASC
   `;
 };
+
+/**
+ * Re-exported for `rosterStatus.repository.ts` so the roster engagement report
+ * can build on the same definitions of "submitted attendance" and "posted a
+ * daily update" this dashboard uses. See the file header.
+ */
+export { accountAttendanceSource, accountUpdateSource, rangeCtes };
 
 export const dailyStatusRepository = {
   getDailyStatusPage,

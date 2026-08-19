@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Defines how reminder DMs are actually delivered: through a durable job queue in which one targeted member is one unit of work. The governing constraint is that the unit of retry must equal the unit of delivery — a broadcast to thousands of members driven from a request handler or a single long-running job has no way to resume after an interruption that does not either lose recipients or message them twice.
+Defines how reminder DMs are actually delivered: through a durable job queue in which one Discord account is one unit of work, even when the broadcast that produced the queue covered several configured servers. The governing constraint is that the unit of retry must equal the unit of delivery — a broadcast to thousands of members driven from a request handler or a single long-running job has no way to resume after an interruption that does not either lose recipients or message them twice.
 
-Two properties follow from delivering at Discord's pace rather than the database's. Delivery is throttled to a small, configurable number of messages per second, shared across every worker on the queue, so that a mass DM cannot trigger Discord's abuse protections. And because queue delivery is at-least-once, a repeated job must be harmless: a job is identified by its broadcast and member so the same pair cannot be enqueued twice, and every job reads the recipient's recorded state before sending. Where neither can be guaranteed — a DM sent but not yet recorded — a duplicate DM is the preferred outcome over a member recorded as reminded who never was.
+Two properties follow from delivering at Discord's pace rather than the database's. Delivery is throttled to a small, configurable number of messages per second, shared across every worker on the queue, so that a mass DM cannot trigger Discord's abuse protections. And because queue delivery is at-least-once, a repeated job must be harmless: a job is identified by its broadcast and the **Discord account** it contacts so the same pair cannot be enqueued twice, and every job reads the recipient's recorded state for every record it is responsible for before sending. Where neither can be guaranteed — a DM sent but not yet recorded — a duplicate DM is the preferred outcome over a member recorded as reminded who never was.
 
 The queue's datastore is a dependency of the reminder feature and of nothing else. Unreachable, it must not stop the HTTP API, the gateway connection, message ingestion, or the channel scheduler; it may only refuse a broadcast, visibly. The worker starts solely once the gateway reports ready, because a job cannot deliver a DM without a connected client, and it closes before the client is destroyed. Like the scheduler, it runs outside any HTTP request: nothing in it throws past its own boundary, and its health is reported to administrators rather than left in the logs.
 
@@ -12,24 +12,24 @@ The queue's datastore is a dependency of the reminder feature and of nothing els
 
 ### Requirement: Reminder DMs are delivered through a durable job queue
 
-The system SHALL deliver reminder DMs through a persistent job queue rather than by iterating over recipients in a request handler or a single long-running job. Each targeted member SHALL be one unit of work, so that the unit of retry is the unit of delivery and an interruption cannot lose or repeat the whole run.
+The system SHALL deliver reminder DMs through a persistent job queue rather than by iterating over recipients in a request handler or a single long-running job. Each targeted **Discord account** SHALL be one unit of work, so that the unit of retry is the unit of delivery and an interruption cannot lose or repeat the whole run.
 
 #### Scenario: Broadcast enqueued
 
-- **WHEN** a reminder broadcast is started for a list of targeted members
-- **THEN** one job is enqueued per targeted member
+- **WHEN** a reminder broadcast is started for a list of targeted accounts
+- **THEN** one job is enqueued per targeted account
 - **AND** the request returns without waiting for any DM to be sent
 
 #### Scenario: Process restarts mid-broadcast
 
 - **WHEN** the process stops while a broadcast is still being delivered and then starts again
 - **THEN** the undelivered jobs are still queued and resume being processed
-- **AND** members already recorded with an outcome are not sent a second DM
+- **AND** accounts already recorded with an outcome are not sent a second DM
 
-#### Scenario: Job unit is a single recipient
+#### Scenario: Job unit is a single account
 
-- **WHEN** one recipient's delivery fails permanently
-- **THEN** only that recipient is affected and the remaining recipients continue to be processed
+- **WHEN** one account's delivery fails permanently
+- **THEN** only that account is affected and the remaining accounts continue to be processed
 
 ### Requirement: Delivery is rate limited below Discord's DM limits
 
@@ -37,7 +37,7 @@ The system SHALL pace DM delivery to a configured small number of messages per s
 
 #### Scenario: Large broadcast is paced
 
-- **WHEN** a broadcast targets thousands of members
+- **WHEN** a broadcast targets thousands of accounts
 - **THEN** DMs are sent at no more than the configured messages per second
 - **AND** the broadcast completes over a period proportional to the target count rather than all at once
 
@@ -68,13 +68,13 @@ The system SHALL retry a delivery that failed for a reason that could succeed la
 
 #### Scenario: Attempts exhausted
 
-- **WHEN** every retry attempt for a recipient has failed
-- **THEN** that recipient is recorded with a failed outcome and the error detail
-- **AND** no further attempts are made for that recipient
+- **WHEN** every retry attempt for an account has failed
+- **THEN** that account is recorded with a failed outcome and the error detail
+- **AND** no further attempts are made for that account
 
 #### Scenario: Permanent condition
 
-- **WHEN** a DM attempt fails because the member cannot receive DMs or the account no longer exists
+- **WHEN** a DM attempt fails because the account cannot receive DMs or no longer exists
 - **THEN** the outcome is recorded immediately and the job is not retried
 
 #### Scenario: Discord signals a rate limit
@@ -85,22 +85,57 @@ The system SHALL retry a delivery that failed for a reason that could succeed la
 
 ### Requirement: A repeated job does not deliver a second DM
 
-Queue delivery is at-least-once, so the system SHALL make a repeated job harmless. A job SHALL be identified so that enqueuing the same broadcast and member twice cannot create two jobs, and SHALL check the recipient's recorded state before sending so that a retry after a recorded success does nothing.
+Queue delivery is at-least-once, so the system SHALL make a repeated job harmless. A job SHALL be identified by the broadcast and the **Discord account** it contacts — not by the member record — so that enqueuing the same broadcast and account twice cannot create two jobs even when that account is a targeted member of more than one configured server. A job SHALL check the recorded state of every recipient record it would settle before sending, so that a retry after a recorded success does nothing.
 
 #### Scenario: Duplicate enqueue
 
-- **WHEN** the same broadcast and member are enqueued twice
+- **WHEN** the same broadcast and Discord account are enqueued twice
 - **THEN** only one job exists for that pair
+
+#### Scenario: One account targeted through two servers
+
+- **WHEN** a broadcast targets one Discord account through member records in two configured servers
+- **THEN** exactly one job is created for that account
+- **AND** the job carries every member record it is responsible for settling
 
 #### Scenario: Retry after a recorded outcome
 
-- **WHEN** a job runs for a recipient whose outcome is already recorded as terminal
-- **THEN** no DM is sent and the recorded outcome is left unchanged
+- **WHEN** a job runs and every recipient record it is responsible for is already recorded as terminal
+- **THEN** no DM is sent and the recorded outcomes are left unchanged
+
+#### Scenario: Partially recorded outcome
+
+- **WHEN** a job runs and some of its recipient records are already terminal while others are not
+- **THEN** the delivery proceeds and every one of its records is settled, so no server is left with a permanently pending record
+
+#### Scenario: Job identity contains no reserved separator
+
+- **WHEN** a job identifier is constructed from the broadcast and the Discord account
+- **THEN** it contains no character the queue reserves as a key separator, so enqueuing cannot fail after the session and recipient records have been written
 
 #### Scenario: Failure between sending and recording
 
-- **WHEN** a DM is sent but the process stops before the outcome is recorded
+- **WHEN** a DM is sent but the process stops before the outcomes are recorded
 - **THEN** the retry may deliver the DM a second time, and this is preferred over a member being recorded as reminded without having been
+
+### Requirement: The delivery rate limit stays shared across every server
+
+The system SHALL apply one delivery rate limit to the whole queue, counted in shared storage, regardless of how many configured servers a broadcast covers. Fan-out across servers SHALL NOT multiply the rate at which DMs leave the bot.
+
+#### Scenario: Broadcast covering two servers
+
+- **WHEN** a broadcast covering two configured servers is delivered
+- **THEN** DMs leave at the configured per-second rate in total, not per server
+
+#### Scenario: The limit is not divided per server
+
+- **WHEN** the configured rate is read
+- **THEN** it is applied as one budget for the bot, because the bot's Discord rate limit is a property of the bot rather than of a server
+
+#### Scenario: Multiple workers
+
+- **WHEN** more than one worker consumes the queue
+- **THEN** they still deliver within the single shared budget
 
 ### Requirement: The queue runtime is isolated from the rest of the process
 

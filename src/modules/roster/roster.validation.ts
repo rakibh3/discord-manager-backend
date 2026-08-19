@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+import {
+  PAIRING_STATE,
+  ROSTER_STATUS,
+  type RosterStatusSortColumn,
+} from '@/repositories/rosterStatus.repository';
+import {
+  dateOrRangeQueryShape,
+  refineDateOrRange,
+} from '@/utils/dhakaDate';
 import { rosterEmailSchema } from '@/utils/rosterEmail';
 
 /**
@@ -92,9 +101,114 @@ const updateSettingsValidationSchema = z.object({
   }),
 });
 
+/** `pairingState` and `status` accept the same enums the repository exports. */
+const pairingStateValues = Object.values(PAIRING_STATE) as [
+  (typeof PAIRING_STATE)[keyof typeof PAIRING_STATE],
+  ...(typeof PAIRING_STATE)[keyof typeof PAIRING_STATE][],
+];
+const rosterStatusValues = Object.values(ROSTER_STATUS) as [
+  (typeof ROSTER_STATUS)[keyof typeof ROSTER_STATUS],
+  ...(typeof ROSTER_STATUS)[keyof typeof ROSTER_STATUS][],
+];
+
+/**
+ * `GET /api/roster/status/counts?date=…` or `?from=…&to=…[&daysOfWeek=…]`
+ *
+ * The roster has no `guild_id`, so a `guildId` filter here would be silently
+ * unfiltered — the cohort this endpoint exists to surface would be partially
+ * dropped without anyone noticing. Rejected explicitly.
+ */
+const statusCountsQuerySchema = z
+  .object({
+    ...dateOrRangeQueryShape,
+    guildId: z.unknown().optional(),
+  })
+  .superRefine((value, ctx) => {
+    refineDateOrRange(value, ctx);
+
+    if (value.guildId !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['guildId'],
+        message:
+          'The roster is not scoped to a server — guildId is not a valid filter here',
+      });
+    }
+  });
+
+/**
+ * The sort allowlist shared by the listing and the export.
+ *
+ * Closed set so no caller-supplied column ever reaches SQL unquoted — the
+ * repository maps each key to a fixed `Prisma.sql` snippet.
+ */
+const SORT_COLUMNS = ['name', 'email', 'status', 'linkedAt'] as const;
+const sortBySchema = z.enum(SORT_COLUMNS, {
+  error: `sortBy must be one of: ${SORT_COLUMNS.join(', ')}`,
+});
+
+/**
+ * `GET /api/roster/status?date=…|from=…&to=…&page=&limit=&pairingState=&status=&search=&sortBy=&sortDir=`
+ */
+const statusQuerySchema = z
+  .object({
+    ...dateOrRangeQueryShape,
+    ...pageShape,
+    pairingState: z.enum(pairingStateValues).optional(),
+    status: z.enum(rosterStatusValues).optional(),
+    search: z.string().trim().max(150).optional(),
+    sortBy: sortBySchema.optional(),
+    sortDir: z.enum(['asc', 'desc']).optional(),
+    guildId: z.unknown().optional(),
+  })
+  .superRefine((value, ctx) => {
+    refineDateOrRange(value, ctx);
+
+    if (value.guildId !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['guildId'],
+        message:
+          'The roster is not scoped to a server — guildId is not a valid filter here',
+      });
+    }
+  });
+
+/**
+ * `GET /api/roster/status/export?date=…|from=…&to=…&pairingState=&status=&search=&format=csv`
+ */
+const statusExportQuerySchema = z
+  .object({
+    ...dateOrRangeQueryShape,
+    pairingState: z.enum(pairingStateValues).optional(),
+    status: z.enum(rosterStatusValues).optional(),
+    search: z.string().trim().max(150).optional(),
+    sortBy: sortBySchema.optional(),
+    sortDir: z.enum(['asc', 'desc']).optional(),
+    format: z.enum(['csv', 'xlsx']).default('csv'),
+    guildId: z.unknown().optional(),
+  })
+  .superRefine((value, ctx) => {
+    refineDateOrRange(value, ctx);
+
+    if (value.guildId !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['guildId'],
+        message:
+          'The roster is not scoped to a server — guildId is not a valid filter here',
+      });
+    }
+  });
+
 export const rosterValidation = {
   listRosterQuerySchema,
   listImportsQuerySchema,
   updateEntryValidationSchema,
   updateSettingsValidationSchema,
+  statusCountsQuerySchema,
+  statusQuerySchema,
+  statusExportQuerySchema,
 };
+
+export type TRosterStatusSortColumn = RosterStatusSortColumn;

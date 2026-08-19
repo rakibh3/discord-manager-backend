@@ -26,6 +26,12 @@
       "type": "string"
     },
     {
+      "key": "attendanceEmail",
+      "value": "",
+      "type": "string",
+      "description": "Email address of an enrolled student. Used by verify-email and submit when roster enforcement is armed. Leave empty to run verify-email against an unknown address."
+    },
+    {
       "key": "reminderDate",
       "value": "",
       "type": "string",
@@ -60,6 +66,12 @@
       "value": "",
       "type": "string",
       "description": "A roster entry id, copied from GET /roster."
+    },
+    {
+      "key": "mismatchReportId",
+      "value": "",
+      "type": "string",
+      "description": "A discord pairing mismatch report id, copied from GET /roster/discord-mismatch-reports."
     }
   ],
   "event": [
@@ -391,14 +403,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{}",
+              "raw": "{\n  \"guildId\": \"{{guildId}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "Requires admin auth. Starts a full guild member re-sync and returns immediately with 202 Accepted; the sync itself runs in the background. Returns 409 if a sync is already running, or 503 if the bot is not connected.\n\n**Multi-server.** Syncs every configured server; `guildId` narrows it to one."
+            "description": "Requires admin auth. Starts a full guild member re-sync and returns immediately with 202 Accepted; the sync itself runs in the background. Returns 409 if a sync is already running, or 503 if the bot is not connected.\n\n**Multi-server.** Body is `{ guildId?: string }`; sync every configured server when omitted, or narrow to a single ID. Response is a fan-out envelope with `data.guildIds[]` (the targeted servers) plus `data.servers[]` (per-server outcomes); partial success is HTTP 202 \u2014 read `data.servers[]`, a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           },
           "event": [
             {
@@ -559,14 +571,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{}",
+              "raw": "{\n  \"guildIds\": [\n    \"{{guildId}}\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
+            "description": "Requires admin auth. Forces #daily-update open immediately and posts the opening embed. The stored schedule is untouched, so the next scheduled lock still fires normally.\n\nBody is `{ guildIds?: string[] }`; omit `guildIds` (or send `{}`) to open every configured server, or pass one or more snowflakes to open only those. An unknown ID is a 400 naming it.\n\n503 if the bot is not connected; 403 if the bot lacks Manage Roles on the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           }
         },
         {
@@ -582,14 +594,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{}",
+              "raw": "{\n  \"guildIds\": [\n    \"{{guildId}}\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
+            "description": "Requires admin auth. Forces #daily-update locked immediately and posts the closing embed. Only SendMessages is denied - members can still read the channel.\n\nBody is `{ guildIds?: string[] }`; omit `guildIds` (or send `{}`) to lock every configured server, or pass one or more snowflakes to lock only those. An unknown ID is a 400 naming it.\n\nThis is also how you close the channel after disabling the schedule: disabling stops the scheduler, it does not lock the channel.\n\n**Multi-server.** Applies to EVERY configured server unless `guildIds` names some. Partial success is HTTP 200 \u2014 read `data.summary.failed` and `data.servers[]`; a `success: true` does NOT mean every server worked. Only a total failure returns an error status."
           }
         }
       ]
@@ -831,12 +843,266 @@
               }
             }
           ]
+        },
+        {
+          "name": "Get Roster Engagement Status Counts",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/roster/status/counts?date=YYYY-MM-DD",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "roster",
+                "status",
+                "counts"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "YYYY-MM-DD",
+                  "description": "REQUIRED for a single-date view. Asia/Dhaka civil date."
+                },
+                {
+                  "key": "from",
+                  "value": "YYYY-MM-DD",
+                  "description": "Range start, inclusive. Required together with `to`."
+                },
+                {
+                  "key": "to",
+                  "value": "YYYY-MM-DD",
+                  "description": "Range end, inclusive. Required together with `from`. Max 92 days."
+                },
+                {
+                  "key": "daysOfWeek",
+                  "value": "0,1,2,3,4",
+                  "description": "Comma-separated cron weekdays to count inside the range. Omit to count every day. A selection that matches zero days is a 400 - vacuous truth would make every paired entry fully complete."
+                }
+              ]
+            },
+            "description": "Requires admin auth. Returns the seven overview figures for the roster engagement view: enrolled, paired, unpaired, bothComplete, missingUpdateOnly, missingAttendanceOnly, missingBoth.\n\nThe denominator is ENROLMENT (people on the roll), not Discord membership - so this will not equal the dashboard's totals. See CLAUDE.md \"Roster vs dashboard totals\" for why.\n\nA range wider than 92 days is a 400. A weekday set matching no day in the range is also a 400, with the same message the daily-status export uses."
+          }
+        },
+        {
+          "name": "Get Roster Engagement Status Listing",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/roster/status?date=YYYY-MM-DD&page=1&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "roster",
+                "status"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "YYYY-MM-DD",
+                  "description": "Single-date view (one of `date` OR `from`+`to`+`daysOfWeek`)."
+                },
+                {
+                  "key": "from",
+                  "value": "YYYY-MM-DD",
+                  "description": "Range start, inclusive."
+                },
+                {
+                  "key": "to",
+                  "value": "YYYY-MM-DD",
+                  "description": "Range end, inclusive."
+                },
+                {
+                  "key": "daysOfWeek",
+                  "value": "0,1,2,3,4",
+                  "description": "Comma-separated cron weekdays to count inside the range."
+                },
+                {
+                  "key": "pairingState",
+                  "value": "all",
+                  "description": "`all` (default), `paired`, or `unpaired`."
+                },
+                {
+                  "key": "status",
+                  "value": "COMPLETE",
+                  "description": "One of COMPLETE, MISSING_UPDATE, MISSING_ATTENDANCE, MISSING_BOTH, NEVER_LINKED."
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "description": "Substring match against name OR email (case-insensitive)."
+                },
+                {
+                  "key": "sortBy",
+                  "value": "name",
+                  "description": "One of name, email, status, linkedAt. Unknown values fall back to name."
+                },
+                {
+                  "key": "sortDir",
+                  "value": "asc",
+                  "description": "asc or desc."
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Requires admin auth. One row per ENROLLED PERSON (not per Discord member), for a date or a range.\n\nPaired rows carry the account's current servers, profile, and the day's attendance / daily-update flags. Unpaired rows carry the entry's name and email but no Discord identity - they are unreachable on Discord, and outreach happens by email outside this system."
+          }
+        },
+        {
+          "name": "Export Roster Engagement Status",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/roster/status/export?date=YYYY-MM-DD&format=csv",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "roster",
+                "status",
+                "export"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "YYYY-MM-DD",
+                  "description": "Single-date view (one of `date` OR `from`+`to`+`daysOfWeek`)."
+                },
+                {
+                  "key": "from",
+                  "value": "YYYY-MM-DD",
+                  "description": "Range start, inclusive."
+                },
+                {
+                  "key": "to",
+                  "value": "YYYY-MM-DD",
+                  "description": "Range end, inclusive."
+                },
+                {
+                  "key": "daysOfWeek",
+                  "value": "0,1,2,3,4",
+                  "description": "Comma-separated cron weekdays to count inside the range."
+                },
+                {
+                  "key": "pairingState",
+                  "value": "all",
+                  "description": "`all`, `paired`, or `unpaired`."
+                },
+                {
+                  "key": "status",
+                  "value": "COMPLETE",
+                  "description": "One of COMPLETE, MISSING_UPDATE, MISSING_ATTENDANCE, MISSING_BOTH, NEVER_LINKED."
+                },
+                {
+                  "key": "format",
+                  "value": "csv",
+                  "description": "Currently only `csv` is produced. `xlsx` is refused with 501 NOT_IMPLEMENTED."
+                }
+              ]
+            },
+            "description": "Requires admin auth. Streams a CSV of the same rows as the listing, paginated through 500-row batches. `format=xlsx` is refused with 501 (the same response the daily-status export uses, naming `csv` as the supported format)."
+          }
+        },
+        {
+          "name": "List Discord Pairing Mismatch Reports",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/roster/discord-mismatch-reports?status=open&page=1&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "roster",
+                "discord-mismatch-reports"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "open",
+                  "description": "open (default), reassigned, or dismissed. Omitting it lands on the actionable queue."
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "description": "Substring match against the entry's name OR email (case-insensitive)."
+                },
+                {
+                  "key": "dateFrom",
+                  "value": "2026-08-01T00:00:00.000Z",
+                  "description": "ISO 8601 datetime; inclusive lower bound of the report time range."
+                },
+                {
+                  "key": "dateTo",
+                  "value": "2026-08-20T23:59:59.000Z",
+                  "description": "ISO 8601 datetime; inclusive upper bound of the report time range."
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "1-200; default 50."
+                }
+              ]
+            },
+            "description": "Requires admin auth. Reports of attendance submissions whose submitted handle did not match the recorded Discord pairing for the same email. One row per open report (or per the status filter), joined to the enrolled entry and the paired / submitting account handles.\n\nReports are produced when a paired student submits attendance with a different handle AND ticks the `cannotEnterRealDiscordUsername` flag on the attendance form. The first write of the day is recorded; subsequent mismatched submissions on the same day are absorbed by the partial unique index and do not create duplicate rows.\n\nThe listing deliberately rejects `pairedAccountId` and `submittingAccountId` filters (400) — combining them would let a caller enumerate Discord account snowflakes. Filter by status, search, and date range only.\n\nOrdering is `reportedAt DESC` so the dashboard's first page is the most recent activity."
+          }
+        },
+        {
+          "name": "Act on Discord Pairing Mismatch Report",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/roster/discord-mismatch-reports/{{mismatchReportId}}/action",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"reassign\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires admin auth. Closes an open mismatch report.\n\n`action` is `reassign` or `dismiss`. Anything else is a 400.\n\nREASSIGN rewrites the entry's pairing to the submitted account, but only if the entry still holds the original paired account — a single conditional write that preserves the invariant against a stale dashboard. The membership check runs first: reassigning to a Discord account that has left every configured server is refused with 422, because the entry would end up paired to nothing. The report and the pairing rewrite are in one transaction; either both happen or neither does.\n\nDISMISS closes the report and leaves the pairing untouched. No membership check; the recorded pairing is the administrator's decision that the existing record is correct.\n\nEither action on a closed report is refused with 409 and the current status. An unknown id is 404. The action writes an audit-log entry with the action, the report id, the reviewing admin, and the time."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Report closed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(['reassigned', 'dismissed']).to.include(jsonData.data.status);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
       "name": "Attendance (Public)",
-      "description": "The web attendance form's public endpoints. These are the ONLY routes in the API with no auth middleware - students are not `users` rows and have no credential to present. Two things stand in for authentication on verify and submit: the handle must resolve to a member currently in the guild, and the caller must be within its per-IP budget (60/min on window & verify-user, 5/15min on submit). Set the {{attendanceUsername}} variable to a real synced member's handle before running these.",
+      "description": "The web attendance form's public endpoints. These are the ONLY routes in the API with no auth middleware - students are not `users` rows and have no credential to present. Two things stand in for authentication on verify and submit: the handle must resolve to a member currently in the guild and (when roster enforcement is armed) the email must be on the active enrolment list; the caller must also be within its per-IP budget (60/min on window, verify-user, and verify-email; 5/15min on submit). Set the {{attendanceUsername}} and {{attendanceEmail}} variables before running these.",
       "item": [
         {
           "name": "Get Attendance Window",
@@ -1006,6 +1272,191 @@
           }
         },
         {
+          "name": "Verify Email - Enrolled",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Email accepted as enrolled', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.success).to.be.true;",
+                  "    pm.expect(jsonData.data.verified).to.be.true;",
+                  "    pm.expect(jsonData.data.emailVerificationRequired).to.be.true;",
+                  "    pm.expect(jsonData.data.attendanceDate).to.match(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                  "});",
+                  "",
+                  "// Only meaningful when the roster gate is armed. With it off the endpoint",
+                  "// answers verified:false (no check was performed) and",
+                  "// data.emailVerificationRequired:false - the form should skip the badge",
+                  "// entirely rather than rendering a ✅ on a random address.",
+                  "pm.test('Rate limit headers present', function () {",
+                  "    pm.expect(pm.response.headers.has('RateLimit-Limit')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-email?email={{attendanceEmail}}",
+            "description": "Live roster-membership check backing the form's email badge. The address is normalized first (trimmed, lowercased) so a student pasting from a chat message that picked up trailing whitespace still resolves.\n\nReturns 200 with `data.verified` true/false - NOT 4xx - because 'not enrolled' is the routine answer the form has to render either way as a hint. `data.emailVerificationRequired` mirrors the gate the submit endpoint will check, so a form that only calls this endpoint still knows whether the rule is armed.\n\nWhen the gate is OFF the endpoint reports `verified: false` and `emailVerificationRequired: false` for every well-formed address. There is no check to pass, so `verified` is deliberately `false` - reporting `true` would read as 'this address is enrolled' for a check that never ran, and would let the form show a ✅ on a random address. Submit also bypasses the gate in this state, so the answer is consistent across read-time and write-time."
+          }
+        },
+        {
+          "name": "Verify Email - Not Enrolled",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Unknown email answered, not errored', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(jsonData.data.verified).to.be.false;",
+                  "    pm.expect(jsonData.data.emailVerificationRequired).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-email?email=ghost-not-on-roster@example.com",
+            "description": "A well-formed email that is not on the active enrolment roster. Still 200; `data.verified` is false.\n\nA deactivated/removed entry gets this same response. That collapse is deliberate - both outcomes block submission anyway, and keeping them indistinguishable means this endpoint cannot be used to confirm that a particular person used to be enrolled.\n\nThe form should render the response's `message` as an inline hint ('please enter your registered email')."
+          }
+        },
+        {
+          "name": "Verify Email - Gate Off",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Force the gate OFF for this call. The setting lives in `roster_settings`",
+                  "// (single row) and `PATCH /roster/settings {enforceEmail:false}` is the",
+                  "// supported rollback; it succeeds whatever the roster holds.",
+                  "// After the call, a follow-up request in this run may need to re-arm.",
+                  "pm.sendRequest({",
+                  "  url: pm.environment.get('baseUrl') + '/roster/settings',",
+                  "  method: 'PATCH',",
+                  "  header: {",
+                  "    'Content-Type': 'application/json',",
+                  "    'Authorization': pm.request.headers.get('Authorization') || ''",
+                  "  },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ enforceEmail: false }) }",
+                  "}, function () { /* ignore - the verify-email call below is what this test asserts */ });",
+                  "",
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "",
+                  "pm.test('Gate-off: well-formed email is answered (no roster check)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    // No check happened. Reporting `verified: false` makes 'gate off'",
+                  "    // indistinguishable from 'not enrolled' on this endpoint - the form",
+                  "    // distinguishes them via `emailVerificationRequired`, NOT `verified`.",
+                  "    pm.expect(jsonData.data.verified).to.be.false;",
+                  "    pm.expect(jsonData.data.emailVerificationRequired).to.be.false;",
+                  "    pm.expect(jsonData.data.attendanceDate).to.match(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                  "});",
+                  "",
+                  "// Re-arm the gate so subsequent tests in the run see the contract they",
+                  "// expect. Same admin endpoint, opposite body.",
+                  "pm.sendRequest({",
+                  "  url: pm.environment.get('baseUrl') + '/roster/settings',",
+                  "  method: 'PATCH',",
+                  "  header: {",
+                  "    'Content-Type': 'application/json',",
+                  "    'Authorization': pm.request.headers.get('Authorization') || ''",
+                  "  },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ enforceEmail: true }) }",
+                  "}, function () {});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-email?email=anywellformed@example.com",
+            "description": "When the roster gate is OFF, no enrolment check is performed. The endpoint reports `verified: false` and `emailVerificationRequired: false` for every well-formed address - never `verified: true`, which would let the form render a ✅ on a random address. Submit also bypasses the gate in this state, so the answer is consistent across read-time and write-time.\n\nThis test preflights by PATCHing `enforceEmail: false` against the admin settings endpoint (the supported rollback) and rearms to `true` in the test script, so the rest of the collection continues to see the gate-armed contract."
+          }
+        },
+        {
+          "name": "Verify Email - Invalid Format",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These endpoints are public: students have no account to log in with.",
+                  "// The collection-level pre-request adds an Authorization header to every",
+                  "// request, so remove it here to prove these work with no credentials.",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Malformed email rejected before any lookup', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(pm.response.json().success).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/attendance/verify-email?email=not-an-email",
+            "description": "A format error is a 400 and a DIFFERENT outcome from 'not enrolled' (200, verified:false). The form must tell 'fix your typing' (400) apart from 'use the email you enrolled with' (200 + verified:false) so the student knows which input to fix."
+          }
+        },
+        {
           "name": "Submit Attendance",
           "event": [
             {
@@ -1049,14 +1500,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"rakib@example.com\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
+              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"{{attendanceEmail}}\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "Records today's attendance. Exactly four fields; anything else is stripped.\n\nValidation: `name` >= 3 chars, letters and spaces only (Unicode, so Bengali names pass); `phone` as 01XXXXXXXXX or +8801XXXXXXXXX; `email` well-formed; `discordUsername` per the official Discord standard.\n\nMembership is re-verified here even if verify-user was called first. That endpoint is a UI affordance - nothing forces a client to call it, and a member can leave the guild between the two requests. Golden Rule 3 is enforced on this path, not in the browser.\n\nOn success the submitted phone and email are also carried onto the member's directory entry, in the same transaction as the insert."
+            "description": "Records today's attendance. Exactly four fields plus one optional flag; anything else is stripped.\n\nValidation: `name` >= 3 chars, letters and spaces only (Unicode, so Bengali names pass); `phone` as 01XXXXXXXXX or +8801XXXXXXXXX; `email` well-formed; `discordUsername` per the official Discord standard.\n\nMembership is re-verified here even if verify-user was called first. That endpoint is a UI affordance - nothing forces a client to call it, and a member can leave the guild between the two requests. Golden Rule 3 is enforced on this path, not in the browser.\n\n`cannotEnterRealDiscordUsername` is optional. The flag is consumed only when the entry is paired and the submitted handle differs from the recorded pairing: the submission is accepted (attendance is recorded) and an open mismatch report is filed for an administrator to review. Unpaired entries are recorded as before; mismatched submissions without the flag are refused with 403. See /roster/discord-mismatch-reports for the admin surface.\n\nOn success the submitted phone and email are also carried onto the member's directory entry, in the same transaction as the insert."
           }
         },
         {
@@ -1101,7 +1552,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"rakib@example.com\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
+              "raw": "{\n  \"name\": \"Rakib Hasan\",\n  \"phone\": \"01711000000\",\n  \"email\": \"{{attendanceEmail}}\",\n  \"discordUsername\": \"{{attendanceUsername}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1171,7 +1622,7 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/reminders/targets?date={{reminderDate}}",
-            "description": "Who WOULD be reminded for a Dhaka date: members currently in the guild with no daily update that day. Sends nothing.\n\n`date` is required and never inferred - an inferred date near midnight would remind the wrong day's members with nothing looking wrong. A future date is rejected."
+            "description": "Who WOULD be reminded for a Dhaka date: members currently in the guild with no daily update that day. Sends nothing.\n\n`date` is required and never inferred - an inferred date near midnight would remind the wrong day's members with nothing looking wrong. A future date is rejected.\n\nRange mode: replace `date` with `from`+`to` (max 92 days), optional `daysOfWeek` and `criterion` (default `MISSING_UPDATE`), `minMissedDays` (default 1). See \"Get Reminder Targets - Missed 2 of the Past 3 Days\" below for the worked example."
           },
           "event": [
             {
@@ -1197,7 +1648,7 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/reminders/send",
-            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast for that date may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.\n\n**Multi-server.** Covers every configured server unless `guildIds` narrows it. One Discord account receives exactly ONE DM even when targeted through several servers \u2014 `targetCount` counts recipient rows, `uniqueRecipients` counts people. The same-date 409 stays global, because it guards the bot's single shared DM budget.",
+            "description": "Starts a broadcast. Answers 202 - NOTHING has been delivered when this returns; delivery runs in the background at the configured rate.\n\nGuards, in order: Redis must be reachable (503), no other broadcast overlapping the requested period may be running (409), and the target list must be non-empty (400). Recipient rows are written BEFORE any job is enqueued, so a crash leaves a visibly incomplete run rather than one that looks finished.\n\nSave the returned `id` - it is how you read progress and cancel.\n\nBody is `{ date?, from?, to?, daysOfWeek?, criterion?, minMissedDays?, message, guildIds? }`. `date` is the single-date mode (unchanged); replace with `from`+`to` for range mode (max 92 days). `criterion` defaults to `MISSING_UPDATE` so an existing single-date send is unchanged. `minMissedDays` defaults to 1. See \"Send Reminder Broadcast - Date Range\" for the range example.\n\n**Multi-server.** Covers every configured server unless `guildIds` narrows it. One Discord account receives exactly ONE DM even when targeted through several servers \u2014 `targetCount` counts recipient rows, `uniqueRecipients` counts people. The overlap 409 stays global, because it guards the bot's single shared DM budget.",
             "header": [
               {
                 "key": "Content-Type",
@@ -2246,7 +2697,7 @@
                 }
               ]
             },
-            "description": "One PERSON's status and their posted #daily-update messages for that date. 404 if memberId is unknown.\n\nThe memberId identifies a member record, but the response describes the whole Discord account behind it: either server's record returns the same answer. `messages` merges both servers' messages into one timeline ordered by send time, each carrying `guildId` and `serverLabel`."
+            "description": "One PERSON's status and their posted #daily-update messages for that date. 404 if memberId is unknown.\n\nThe memberId identifies a member record, but the response describes the whole Discord account behind it: either server's record returns the same answer. The response carries `servers` (every server the account is in), `serverCount` (the true total, never narrowed by filters), and `memberIds` (every member record, aligned with `servers`). `messages` merges every server's messages into one timeline ordered by send time, each carrying `guildId` and `serverLabel`.\n\nRange mode: replace `date` with `from`+`to` (max 92 days), optional `daysOfWeek`. Range mode adds a `days` array (one entry per counted day with that day's status, hasAttendance, hasDailyUpdate) in place of the single-date status fields, plus the per-day counts."
           },
           "event": [
             {
@@ -2298,7 +2749,7 @@
                 }
               ]
             },
-            "description": "Streams filtered daily status rows as a CSV file attachment - one row per PERSON. Values with =, +, -, @ are escaped to prevent formula injection.\n\nThe leading `servers` column lists every server the person belongs to, pipe-separated."
+            "description": "Streams filtered daily status rows as a CSV file attachment - one row per PERSON. Values with =, +, -, @ are escaped to prevent formula injection.\n\nThe leading `servers` column lists every server the person belongs to, pipe-separated.\n\n`format=xlsx` returns 501 NOT_IMPLEMENTED in both date and range modes (the same response the roster engagement export uses); use `format=csv` (the default).\n\nRange mode replaces `date` with `from`+`to` (max 92 days), optional `daysOfWeek`, `rangeStatus` and `minMissedBothDays` filters. The header row names the range count columns and the filename identifies the span."
           },
           "event": [
             {

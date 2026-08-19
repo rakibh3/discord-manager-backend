@@ -2,7 +2,9 @@
 
 ## Purpose
 
-Defines the public HTTP surface a student uses to record a day's attendance — the first path in the system that accepts input from an unauthenticated caller. It covers how a submitted Discord handle is normalized and format-checked against Discord's official username standard, how that handle is verified live against the synced guild directory, what "already submitted" means for the current Asia/Dhaka calendar date, and which submissions are refused and on what distinguishable grounds. Because students have no login account, the membership check *is* the authorization model: the verification endpoint is an advisory affordance for the form, while the submission endpoint independently re-runs normalization, format validation, and guild-membership verification before any write, so nothing is accepted on the strength of what a client was told earlier. Duplicate refusal rests on the database uniqueness constraint rather than a read-then-write check, and the attendance record plus the member's contact details are written together so neither can survive the other's failure.
+Defines the public HTTP surface a student uses to record a day's attendance — the first path in the system that accepts input from an unauthenticated caller. It covers how a submitted Discord handle is normalized and format-checked against Discord's official username standard, how that handle is verified live against the synced guild directory across every configured server, what "already submitted" means for the current Asia/Dhaka calendar date, and which submissions are refused and on what distinguishable grounds.
+
+A Discord account may be a current member of more than one configured server, and the student only submits once. The system therefore writes attendance for every server the submitting account is in, atomically, and credits the day to the account everywhere — one person submits once, the day is recorded in every server the account belongs to. Because students have no login account, the membership check *is* the authorization model: the verification endpoint is an advisory affordance for the form, while the submission endpoint independently re-runs normalization, format validation, and per-server membership verification before any write, so nothing is accepted on the strength of what a client was told earlier. Duplicate refusal rests on the database uniqueness constraint rather than a read-then-write check, and the attendance record plus the member's contact details are written together so neither can survive the other's failure.
 
 ## Requirements
 
@@ -56,25 +58,38 @@ The accepted form is 2 to 32 characters drawn from lowercase `a-z`, digits `0-9`
 
 ### Requirement: Membership verification reports whether a handle belongs to the guild
 
-The system SHALL expose a public read endpoint that, given a Discord handle, reports whether that handle belongs to a member currently in the guild. The endpoint SHALL require no administrator credentials.
+The system SHALL expose a public read endpoint that, given a Discord handle, reports whether that handle belongs to a member currently in **any** configured server, and which servers those are. The endpoint SHALL require no administrator credentials.
 
-#### Scenario: Handle belongs to a current member
+#### Scenario: Handle belongs to a current member of one server
 
-- **WHEN** verification is requested for a handle held by a member currently in the guild
+- **WHEN** verification is requested for a handle held by a member currently in one configured server
 - **THEN** the response reports the handle as verified
 - **AND** includes the member's identifier, normalized handle, display name, and avatar URL so the form can show a confirmation badge
+- **AND** names the one server the handle is a current member of
 
-#### Scenario: Handle is not in the directory
+#### Scenario: Handle belongs to a current member of both servers
 
-- **WHEN** verification is requested for a well-formed handle that no directory entry holds
+- **WHEN** verification is requested for a handle held by a current member of two configured servers
+- **THEN** the response reports the handle as verified once, not twice
+- **AND** names both servers
+
+#### Scenario: Handle is not in any directory
+
+- **WHEN** verification is requested for a well-formed handle that no directory entry in any configured server holds
 - **THEN** the response reports the handle as not verified
 - **AND** carries a message telling the student the handle was not found in the server and that they may need to join it first
 
 #### Scenario: Handle belongs to a departed member
 
-- **WHEN** verification is requested for a handle whose directory entry is flagged as no longer in the guild
+- **WHEN** verification is requested for a handle whose directory entries are all flagged as no longer in their guild
 - **THEN** the response reports the handle as not verified
-- **AND** the departed member's stored record is left untouched
+- **AND** the departed members' stored records are left untouched
+
+#### Scenario: Handle departed from one server and present in another
+
+- **WHEN** a handle is departed from one configured server and present in another
+- **THEN** the response reports the handle as verified
+- **AND** names only the server they are still a member of
 
 #### Scenario: Verification requires no credentials
 
@@ -83,18 +98,24 @@ The system SHALL expose a public read endpoint that, given a Discord handle, rep
 
 ### Requirement: Verification reports whether today's attendance is already recorded
 
-Along with the membership answer, the system SHALL report whether the verified member already has an attendance record for the current Asia/Dhaka calendar date, and SHALL name that date in the response.
+Along with the membership answer, the system SHALL report whether the verified member already has an attendance record for the current Asia/Dhaka calendar date, and SHALL name that date in the response. When the handle is a current member of more than one server, the answer SHALL be reported per server, and the overall answer SHALL be that they have already submitted only when every one of those servers already holds a record.
 
 #### Scenario: Member has not submitted today
 
-- **WHEN** a verified member has no attendance record for today's Dhaka date
+- **WHEN** a verified member has no attendance record for today's Dhaka date in any server they belong to
 - **THEN** the response reports that they have not already submitted
 
 #### Scenario: Member has submitted today
 
-- **WHEN** a verified member already has an attendance record for today's Dhaka date
+- **WHEN** a verified member already has an attendance record for today's Dhaka date in every server they belong to
 - **THEN** the response reports that they have already submitted
 - **AND** the message names the date they submitted for
+
+#### Scenario: Member submitted in one server only
+
+- **WHEN** a verified member belongs to two servers and has today's attendance recorded in one of them
+- **THEN** the response reports that they have not already submitted overall
+- **AND** reports per server which one already holds a record, so a further submission is not presented as pointless
 
 #### Scenario: Member submitted yesterday only
 
@@ -103,8 +124,8 @@ Along with the membership answer, the system SHALL report whether the verified m
 
 #### Scenario: Unverified handle carries no submission answer
 
-- **WHEN** a handle is not verified as a current member
-- **THEN** the already-submitted answer is reported as false and no member details are disclosed
+- **WHEN** a handle is not verified as a current member of any server
+- **THEN** the already-submitted answer is reported as false and no member details or server names are disclosed
 
 ### Requirement: Attendance submissions are validated field by field
 
@@ -252,67 +273,145 @@ The roster check SHALL be a single indexed database read on an exact normalized 
 
 ### Requirement: An accepted submission records the day's attendance
 
-On accepting a submission, the system SHALL write one attendance record owned by the verified member, dated with the current Asia/Dhaka calendar date, retaining the name, phone, and email exactly as submitted.
+On accepting a submission, the system SHALL write one attendance record for **each** configured server in which the submitting handle is a current member, each owned by that server's member record, dated with the current Asia/Dhaka calendar date, retaining the name, phone, and email exactly as submitted. All of those writes SHALL succeed or fail together.
 
 #### Scenario: Record written for today
 
-- **WHEN** a valid submission from a verified member is accepted
+- **WHEN** a valid submission from a verified member of one server is accepted
 - **THEN** an attendance record is created for that member and today's Dhaka date
 - **AND** the response confirms the submission and names the date it was recorded for
+
+#### Scenario: Member of two servers submits once
+
+- **WHEN** a valid submission is accepted from a handle that is a current member of two configured servers
+- **THEN** one attendance record is created in each server for today's Dhaka date
+- **AND** the response names every server the submission was recorded in
+- **AND** neither server subsequently reports that member as missing attendance
+
+#### Scenario: The writes are atomic
+
+- **WHEN** one of the per-server attendance writes fails
+- **THEN** none of them is committed, so the student is never left recorded in one server and silently missing in the other
 
 #### Scenario: Submitted details are retained verbatim
 
 - **WHEN** a submission is accepted
-- **THEN** the name, phone, and email stored on the attendance record are the values the student submitted
-- **AND** a later submission with different details does not alter the earlier record
+- **THEN** the name, phone, and email stored on every attendance record written are the values the student submitted
+- **AND** a later submission with different details does not alter the earlier records
 
 #### Scenario: Submission near the day boundary
 
 - **WHEN** a submission arrives at 23:58 Asia/Dhaka
-- **THEN** it is recorded against that day, not the following one
+- **THEN** it is recorded against that day, not the following one, in every server it was written to
 - **AND** the date is the same regardless of the server's own configured timezone
 
 ### Requirement: Contact details are carried onto the member directory entry
 
-On accepting a submission, the system SHALL save the submitted phone number and email address onto the member's directory entry, so the dashboard can reach a member who has not submitted today.
+On accepting a submission, the system SHALL save the submitted phone number and email address onto the member's directory entry **in every server the submission was recorded in**, so the dashboard can reach a member who has not submitted today whichever server it is looking at.
 
 #### Scenario: Member with no stored contact details
 
 - **WHEN** a member whose directory entry has no phone or email submits attendance
 - **THEN** the submitted phone and email are stored on that entry
 
+#### Scenario: Member of two servers
+
+- **WHEN** a member of two configured servers submits
+- **THEN** both servers' directory entries carry the submitted phone and email
+
 #### Scenario: Member updates their details
 
 - **WHEN** a member who previously submitted one email submits again on a later day with a different email
-- **THEN** the directory entry carries the newer email
-- **AND** the earlier day's attendance record still shows the email submitted that day
+- **THEN** the directory entries carry the newer email
+- **AND** the earlier day's attendance records still show the email submitted that day
 
 #### Scenario: Directory update and attendance write are atomic
 
-- **WHEN** writing the attendance record fails
-- **THEN** the directory entry's contact details are left unchanged
+- **WHEN** writing any attendance record fails
+- **THEN** no directory entry's contact details are changed
 
 ### Requirement: A second submission on the same day is refused as a duplicate
 
-The system SHALL refuse a submission from a member who already has an attendance record for the current Asia/Dhaka date, SHALL identify the refusal as a duplicate rather than as an unknown failure, and SHALL name the date in the message. The refusal SHALL rest on the database uniqueness constraint rather than on a prior existence check.
+The system SHALL refuse a submission when the submitting handle already has an attendance record for the current Asia/Dhaka date in **every** server it is a current member of, SHALL identify the refusal as a duplicate rather than as an unknown failure, and SHALL name the date in the message. The refusal SHALL rest on the database uniqueness constraint rather than on a prior existence check. When a record exists in some but not all of those servers, the missing records SHALL be written and the submission accepted.
 
 #### Scenario: Member submits twice sequentially
 
-- **WHEN** a member who has already submitted today submits again
+- **WHEN** a member who has already submitted today in every server they belong to submits again
 - **THEN** the submission is refused as a duplicate
 - **AND** the message names today's Dhaka date
-- **AND** the existing record is left unchanged
+- **AND** the existing records are left unchanged
+
+#### Scenario: Member joined a second server after submitting
+
+- **WHEN** a member who submitted today in one server, and has since joined a second configured server, submits again
+- **THEN** the missing record is written for the second server
+- **AND** the response is a success naming the servers the submission was recorded in
+- **AND** the first server's existing record is left unchanged
 
 #### Scenario: Two submissions arrive simultaneously
 
-- **WHEN** two submissions for the same member and the same date are processed at the same instant
-- **THEN** exactly one attendance record exists afterwards
+- **WHEN** two submissions for the same handle and the same date are processed at the same instant
+- **THEN** exactly one attendance record exists per server afterwards
 - **AND** the losing request receives the duplicate refusal, not an unknown error
 
 #### Scenario: Same member on the following day
 
 - **WHEN** a member who submitted yesterday submits today
-- **THEN** the submission is accepted as a separate record
+- **THEN** the submission is accepted as a separate record in every server they belong to
+
+### Requirement: The submission accepts an optional "I cannot enter my real Discord username" flag
+
+The system SHALL accept, on the public attendance submission, an optional flag indicating that the student cannot enter their real Discord username. The flag SHALL be carried alongside the four accepted fields and SHALL be ignored when its value is not a JSON boolean.
+
+The flag SHALL NOT be required. Submissions without it SHALL be processed exactly as they are today. The flag SHALL be rejected only when it is supplied with a non-boolean value.
+
+The flag is consumed only when the submitted address is held by an active roster entry that already holds a Discord account, and the submitted handle is not that account. In that case, the flag changes the outcome from "refused with the mismatch outcome" to "accepted and recorded with a mismatch report", so that a student who genuinely cannot enter the right account can keep submitting attendance while an administrator investigates.
+
+#### Scenario: Flag not supplied
+
+- **WHEN** a submission is accepted without the flag
+- **THEN** the submission proceeds through the existing acceptance path unchanged
+
+#### Scenario: Flag supplied with a non-boolean value
+
+- **WHEN** a submission is accepted with the flag set to anything other than a JSON boolean
+- **THEN** the submission is refused as a validation error naming the field
+- **AND** no attendance record is written
+
+#### Scenario: Flag supplied but the address is unpaired
+
+- **WHEN** an accepted submission carries an enrolled address whose entry holds no Discord account, and the flag is set
+- **THEN** the submission is accepted and recorded with the existing first-write-wins pairing
+- **AND** no mismatch report is created
+
+#### Scenario: Flag supplied and the handle matches
+
+- **WHEN** an accepted submission carries an enrolled address whose entry is paired with an account, the submitted handle normalizes to that account, and the flag is set
+- **THEN** the submission is accepted and recorded with the matching pairing
+- **AND** no mismatch report is created
+
+#### Scenario: Flag supplied with a mismatched handle
+
+- **WHEN** an accepted submission carries an enrolled address whose entry is paired with a different account, the submitted handle does not normalize to that account, and the flag is set
+- **THEN** the submission is accepted and the day's attendance is written
+- **AND** a mismatch report is recorded against the pairing
+
+#### Scenario: Flag supplied with a handle that matches no guild member
+
+- **WHEN** a submission carries the flag and the submitted handle resolves to no current member of any configured guild
+- **THEN** the flag is ignored
+- **AND** the submission is refused for the membership reason
+- **AND** no mismatch report is created
+
+#### Scenario: Flag never reveals a roster detail
+
+- **WHEN** the flag is supplied on an accepted submission
+- **THEN** the response body carries no paired-account identifier, no count of open reports, and no record that a report was created
+
+#### Scenario: Flag never changes the distinguishable outcomes
+
+- **WHEN** a submission with the flag is accepted
+- **THEN** the response is the normal accepted-submission response, with the same body and status as a submission without the flag
 
 ### Requirement: Failures are reported distinguishably
 
@@ -351,3 +450,104 @@ A refusal on the roster check SHALL be reported as its own outcome, distinct fro
 - **WHEN** any submission is refused
 - **THEN** the message describes what the student should do
 - **AND** carries no database constraint name, query text, or stack trace outside development
+
+### Requirement: An accepted submission records the email-to-account pairing
+
+The system SHALL record, after an accepted submission has written its attendance rows, the pairing between the submitted email address and the submitting Discord account, when the address is held by an active roster entry that holds no account yet.
+
+The submission is the only request in the system carrying both an enrolled address and a Discord handle, and by the time the attendance is written both have already been independently checked. Discarding that pairing is what leaves an enrolled person who has never submitted indistinguishable from one who never enrolled on Discord at all.
+
+The recording SHALL be attempted whether or not roster enforcement is enabled, and SHALL take no external call — no Discord API request, no additional round trip beyond a single indexed write against a local table.
+
+#### Scenario: First accepted submission by an enrolled student
+
+- **WHEN** a submission carrying an enrolled address and a valid handle is accepted
+- **THEN** the roster entry holding that address is recorded as paired with the submitting account
+
+#### Scenario: Enforcement disabled
+
+- **WHEN** an accepted submission carries an enrolled address while enforcement is disabled
+- **THEN** the pairing is still recorded
+
+#### Scenario: Address is not on the roster
+
+- **WHEN** a submission carries an address no active entry holds
+- **THEN** no roster entry is created or modified
+
+#### Scenario: No external call added
+
+- **WHEN** a submission is accepted and the pairing is recorded
+- **THEN** no Discord API call is made on account of the pairing
+
+### Requirement: The pairing step cannot change the outcome of a submission
+
+The system SHALL perform the pairing write outside the transaction that records attendance, after that transaction commits, and SHALL absorb every error it raises. The response status, the response body, and whether the attendance was written SHALL be identical whether the pairing succeeded, was declined as a conflict, or failed outright.
+
+The four distinguishable submission outcomes — a field error, an address not on the roster, a handle in no server, and a duplicate for the day — SHALL remain exactly four. The form uses the difference between them to tell a student what to fix, and a fifth outcome caused by bookkeeping would name a problem the student cannot act on.
+
+#### Scenario: Pairing write fails
+
+- **WHEN** the pairing write raises an error after attendance has been committed
+- **THEN** the response is the normal success response
+- **AND** the attendance rows remain committed
+
+#### Scenario: Pairing declined as a conflict
+
+- **WHEN** the submitting account is already paired with a different entry
+- **THEN** the submission is still accepted and answers success
+
+#### Scenario: Response body unchanged
+
+- **WHEN** a submission is accepted
+- **THEN** the response body carries the same fields it carried before pairing existed
+
+#### Scenario: Failure outcomes unchanged
+
+- **WHEN** submissions are made that fail validation, the roster check, the membership check, and the duplicate check
+- **THEN** they answer 400, 403, 404, and 409 respectively, as before
+
+### Requirement: A recorded pairing does not tighten the submission checks
+
+The system SHALL continue to accept a submission on exactly two independent conditions — that an active roster entry holds the submitted address when enforcement is enabled, and that the submitted handle resolves to a current member of at least one configured server. It SHALL NOT additionally require that the entry and the account are already paired with each other, or that they are not paired with anyone else.
+
+What an accepted submission asserts is unchanged: an enrolled person's address was supplied, and the submitting account is in a configured server. It still does not assert that the two describe the same person, and the pairing must not be read as though it did.
+
+#### Scenario: Submitting under another enrolled address
+
+- **WHEN** a student whose account is paired with one entry submits using a different enrolled address
+- **THEN** the submission is accepted
+
+#### Scenario: Unpaired student submits
+
+- **WHEN** an enrolled student with no pairing submits with a valid handle and an enrolled address
+- **THEN** the submission is accepted
+
+#### Scenario: Roster gate consults only the address
+
+- **WHEN** the roster gate evaluates a submission
+- **THEN** it consults only whether an active entry holds the submitted address
+
+### Requirement: Submission re-resolves the handle across servers and never trusts verification
+
+The system SHALL, on the write path, re-normalize the handle, re-validate its format, and resolve it again to the set of servers in which it is a current member, rather than trusting that verification was called or that its answer is still true. The set resolved at submission time SHALL be the set written to.
+
+#### Scenario: Submission without a prior verification call
+
+- **WHEN** a submission arrives for a handle that was never verified through the read endpoint
+- **THEN** the membership check is performed on the write path and the submission is handled on its result
+
+#### Scenario: Membership changed between verify and submit
+
+- **WHEN** a handle was a current member of two servers at verification time and has left one of them by submission time
+- **THEN** attendance is recorded only in the server they are still a member of
+
+#### Scenario: Handle left every server between verify and submit
+
+- **WHEN** a handle verified successfully and has left every configured server before submitting
+- **THEN** the submission is refused as not found
+- **AND** no attendance record is written
+
+#### Scenario: Not-found remains a failure on the write path
+
+- **WHEN** a well-formed handle that is a current member of no configured server submits
+- **THEN** the submission is refused as not found, distinctly from a format error

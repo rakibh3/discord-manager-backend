@@ -37,10 +37,28 @@ const verifyUserQuerySchema = z.object({
 });
 
 /**
+ * `GET /api/attendance/verify-email?email=…`
+ *
+ * Same shape of input as the submit endpoint's `email` field, so a malformed
+ * value fails here the same way it would fail at submit — handing the form the
+ * same "please provide a valid email address" message it would have seen one
+ * click later. Trimmed before the address check for the same reason as the
+ * submit schema: a trailing space from a chat paste must not reject an
+ * otherwise valid address before it ever reaches the roster lookup.
+ */
+const verifyEmailQuerySchema = z.object({
+  email: z
+    .string({ error: 'Email address is required' })
+    .trim()
+    .pipe(z.email({ error: 'Please provide a valid email address' })),
+});
+
+/**
  * `POST /api/attendance/submit`
  *
- * Exactly the four fields from PID §3.1. Zod strips anything else by default,
- * so extra keys are ignored rather than written.
+ * Exactly the four fields from PID §3.1, plus one optional flag for
+ * "I cannot enter my real Discord username". Zod strips anything else by
+ * default, so extra keys are ignored rather than written.
  */
 const submitAttendanceValidationSchema = z.object({
   name: z
@@ -77,9 +95,22 @@ const submitAttendanceValidationSchema = z.object({
     .pipe(z.email({ error: 'Please provide a valid email address' })),
 
   discordUsername: discordUsernameField('Discord username'),
+
+  // Strict boolean: any other value (a string, a number, an `undefined`
+  // that arrived as `"undefined"`) is a validation error naming the field.
+  // Zod's default `OPTIONAL` would silently coerce a missing key but
+  // reject a string, which is what we want: a missing key is `false`, a
+  // present-but-malformed value is a 400.
+  cannotEnterRealDiscordUsername: z
+    .boolean({
+      error:
+        'cannotEnterRealDiscordUsername must be true or false',
+    })
+    .optional(),
 });
 
 export const attendanceValidation = {
   verifyUserQuerySchema,
+  verifyEmailQuerySchema,
   submitAttendanceValidationSchema,
 };

@@ -67,4 +67,31 @@ router.patch(
   rosterController.restoreEntry,
 );
 
+// The roster engagement read model — overview counts, paginated listing, and
+// a CSV export of the same filtered set.
+//
+// DECLARED BEFORE `/:id` for the same reason `/settings` is: Express would
+// otherwise match `status` (and `status/counts`, `status/export`) as an entry
+// ID and answer 404 for the whole engagement surface.
+router.get(
+  '/status/counts',
+  auth(UserRole.ADMIN),
+  validateQuery(rosterValidation.statusCountsQuerySchema),
+  rosterController.getStatusCounts,
+);
+
+router.get(
+  '/status/export',
+  auth(UserRole.ADMIN),
+  validateQuery(rosterValidation.statusExportQuerySchema),
+  rosterController.exportStatus,
+);
+
+router.get(
+  '/status',
+  auth(UserRole.ADMIN),
+  validateQuery(rosterValidation.statusQuerySchema),
+  rosterController.getStatusPage,
+);
+
 export const rosterRouter: Router = router;

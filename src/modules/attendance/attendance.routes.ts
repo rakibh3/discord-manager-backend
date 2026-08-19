@@ -3,6 +3,7 @@ import express, { Router } from 'express';
 import {
   attendanceWindowRateLimiter,
   submitAttendanceRateLimiter,
+  verifyEmailRateLimiter,
   verifyUserRateLimiter,
 } from '@/middlewares/rateLimit';
 import { validateQuery, validateRequest } from '@/middlewares/validateRequest';
@@ -16,7 +17,7 @@ import { attendanceValidation } from '@/modules/attendance/attendance.validation
  * login accounts only — so there is no credential for the attendance form to
  * present.
  *
- * For `/verify-user` and `/submit`, what replaces authentication is the pair of
+ * For `/verify-user`, `/verify-email` and `/submit`, what replaces authentication is the pair of
  * checks on every request: the handle must resolve to a member currently in the guild
  * (Golden Rule 3, enforced in the service on both endpoints), and the caller
  * must be within its per-IP budget.
@@ -35,6 +36,15 @@ router.get(
   verifyUserRateLimiter,
   validateQuery(attendanceValidation.verifyUserQuerySchema),
   attendanceController.verifyUser,
+);
+
+// Live roster-membership check for the form's email badge. Mirror of the
+// route above for the second field the form has to validate before submit.
+router.get(
+  '/verify-email',
+  verifyEmailRateLimiter,
+  validateQuery(attendanceValidation.verifyEmailQuerySchema),
+  attendanceController.verifyEmail,
 );
 
 // Record today's attendance.

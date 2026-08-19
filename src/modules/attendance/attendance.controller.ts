@@ -25,6 +25,27 @@ const verifyUser = catchAsync(async (req, res) => {
   });
 });
 
+// Live check: is this email on the active enrolment roster? Always 200 —
+// "not enrolled" is the routine answer the form has to render as a hint, not
+// a failure. Same envelope shape as `verifyUser` so the form's badge and the
+// submit-time check cannot drift on what "verified" means.
+const verifyEmail = catchAsync(async (req, res) => {
+  const result = await attendanceService.verifyEmail(
+    req.query.email as string,
+  );
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: result.verified
+      ? 'Email verified'
+      : result.emailVerificationRequired
+        ? 'This email address is not on our enrolled student list. Please use the email address you enrolled with, or contact an admin.'
+        : 'Roster check is currently disabled by an admin; no enrolment check was performed.',
+    data: result,
+  });
+});
+
 // Record today's attendance from the web form.
 const submitAttendance = catchAsync(async (req, res) => {
   const result = await attendanceService.submitAttendance(req.body);
@@ -51,6 +72,7 @@ const getAttendanceWindow = catchAsync(async (_req, res) => {
 
 export const attendanceController = {
   verifyUser,
+  verifyEmail,
   submitAttendance,
   getAttendanceWindow,
 };

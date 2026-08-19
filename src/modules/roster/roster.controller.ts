@@ -6,6 +6,7 @@ import { runRosterUpload } from '@/middlewares/upload';
 import { rosterService } from '@/modules/roster/roster.service';
 import { rosterValidation } from '@/modules/roster/roster.validation';
 import { catchAsync } from '@/utils/catchAsync';
+import { resolvePeriod } from '@/utils/dhakaDate';
 import { sendResponse } from '@/utils/sendResponse';
 
 /**
@@ -150,6 +151,215 @@ const updateSettings = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * Read `daysOfWeek=0,1,2` as the integer array — `validateQuery` parses but
+ * does not assign back under Express 5.
+ */
+const readDaysOfWeek = (req: Request): number[] | undefined => {
+  const raw = req.query.daysOfWeek;
+
+  if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
+
+  return raw
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isInteger(value));
+};
+
+/**
+ * Translate the validated query into the resolved period the service consumes.
+ *
+ * The schema has already refused every malformed combination, so this only has
+ * to read which of the two valid forms arrived.
+ */
+const readResolvedPeriod = (req: Request) =>
+  resolvePeriod({
+    date: req.query.date as string | undefined,
+    from: req.query.from as string | undefined,
+    to: req.query.to as string | undefined,
+    daysOfWeek: readDaysOfWeek(req),
+  });
+
+/** Engagement overview counts for a date or a range. */
+const getStatusCounts = catchAsync(async (req, res) => {
+  const period = readResolvedPeriod(req);
+
+  const { meta, counts } = await rosterService.getStatusCounts(period);
+
+  sendResponse(res, {
+    success: true,
+    statusCode: httpStatus.OK,
+    message: 'Roster status counts retrieved successfully',
+    data: { meta, counts },
+  });
+});
+
+/** Engagement listing for a date or a range. */
+const getStatusPage = catchAsync(async (req, res) => {
+  const period = readResolvedPeriod(req);
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 50);
+
+  const resolved = rosterService.resolveRosterStatusPeriodInput(period);
+
+  if (resolved.mode === 'date' && resolved.meta.mode === 'date') {
+    const { meta, rows, total } = await rosterService.getStatusPage({
+      date: resolved.meta.date,
+      pairingState: req.query.pairingState as
+        | 'all'
+        | 'paired'
+        | 'unpaired'
+        | undefined,
+      status: req.query.status as
+        | 'COMPLETE'
+        | 'MISSING_UPDATE'
+        | 'MISSING_ATTENDANCE'
+        | 'MISSING_BOTH'
+        | 'NEVER_LINKED'
+        | undefined,
+      search: req.query.search as string | undefined,
+      sortBy: req.query.sortBy as
+        | 'name'
+        | 'email'
+        | 'status'
+        | 'linkedAt'
+        | undefined,
+      sortDir: req.query.sortDir as 'asc' | 'desc' | undefined,
+      page,
+      limit,
+    });
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: 'Roster status retrieved successfully',
+      meta: { page, limit, total, ...meta },
+      data: rows,
+    });
+
+    return;
+  }
+
+  if (resolved.mode === 'range' && resolved.meta.mode === 'range') {
+    const { meta, rows, total } = await rosterService.getStatusPage({
+      days: resolved.days,
+      pairingState: req.query.pairingState as
+        | 'all'
+        | 'paired'
+        | 'unpaired'
+        | undefined,
+      status: req.query.status as
+        | 'COMPLETE'
+        | 'MISSING_UPDATE'
+        | 'MISSING_ATTENDANCE'
+        | 'MISSING_BOTH'
+        | 'NEVER_LINKED'
+        | undefined,
+      search: req.query.search as string | undefined,
+      sortBy: req.query.sortBy as
+        | 'name'
+        | 'email'
+        | 'status'
+        | 'linkedAt'
+        | undefined,
+      sortDir: req.query.sortDir as 'asc' | 'desc' | undefined,
+      page,
+      limit,
+    });
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: 'Roster status retrieved successfully',
+      meta: { page, limit, total, ...meta },
+      data: rows,
+    });
+
+    return;
+  }
+
+  throw new AppError(
+    httpStatus.INTERNAL_SERVER_ERROR,
+    'Period resolution mismatch',
+  );
+});
+
+/** Engagement export (CSV attachment) for a date or a range. */
+const exportStatus = catchAsync(async (req, res) => {
+  const period = readResolvedPeriod(req);
+  const resolved = rosterService.resolveRosterStatusPeriodInput(period);
+  const format = req.query.format as 'csv' | 'xlsx' | undefined;
+
+  if (resolved.mode === 'date' && resolved.meta.mode === 'date') {
+    await rosterService.exportStatusCsv(
+      {
+        date: resolved.meta.date,
+        pairingState: req.query.pairingState as
+          | 'all'
+          | 'paired'
+          | 'unpaired'
+          | undefined,
+        status: req.query.status as
+          | 'COMPLETE'
+          | 'MISSING_UPDATE'
+          | 'MISSING_ATTENDANCE'
+          | 'MISSING_BOTH'
+          | 'NEVER_LINKED'
+          | undefined,
+        search: req.query.search as string | undefined,
+        sortBy: req.query.sortBy as
+          | 'name'
+          | 'email'
+          | 'status'
+          | 'linkedAt'
+          | undefined,
+        sortDir: req.query.sortDir as 'asc' | 'desc' | undefined,
+        format,
+      },
+      res,
+    );
+
+    return;
+  }
+
+  if (resolved.mode === 'range' && resolved.meta.mode === 'range') {
+    await rosterService.exportStatusCsv(
+      {
+        days: resolved.days,
+        pairingState: req.query.pairingState as
+          | 'all'
+          | 'paired'
+          | 'unpaired'
+          | undefined,
+        status: req.query.status as
+          | 'COMPLETE'
+          | 'MISSING_UPDATE'
+          | 'MISSING_ATTENDANCE'
+          | 'MISSING_BOTH'
+          | 'NEVER_LINKED'
+          | undefined,
+        search: req.query.search as string | undefined,
+        sortBy: req.query.sortBy as
+          | 'name'
+          | 'email'
+          | 'status'
+          | 'linkedAt'
+          | undefined,
+        sortDir: req.query.sortDir as 'asc' | 'desc' | undefined,
+        format,
+      },
+      res,
+    );
+
+    return;
+  }
+
+  throw new AppError(
+    httpStatus.INTERNAL_SERVER_ERROR,
+    'Period resolution mismatch',
+  );
+});
+
 export const rosterController = {
   importRoster,
   listRoster,
@@ -159,4 +369,7 @@ export const rosterController = {
   restoreEntry,
   getSettings,
   updateSettings,
+  getStatusCounts,
+  getStatusPage,
+  exportStatus,
 };

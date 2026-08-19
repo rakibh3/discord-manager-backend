@@ -1,0 +1,95 @@
+// Discord pairing mismatch reports.
+//
+// One row per "this Discord username is not mine" flag-set submission per
+// roster entry per Asia/Dhaka date, while the report is still `open`. A second
+// submission on the same day for the same entry does NOT create a duplicate
+// row — the partial unique index on `(roster_entry_id, submission_dhaka_date)`
+// filtered by `status = 'open'` is the database-level guarantee.
+//
+// The status column is a string enum rather than a separate "closed" column
+// because the action is part of the audit trail, not a deletion: the report
+// is the record of an event, and the resolution is part of that record.
+//
+// `paired_account_id` and `submitting_account_id` are Discord ACCOUNT
+// snowflakes, not `discord_members.id` — same reasoning as `RosterEntry`'s
+// `discordUserId`. One person in two servers is two member rows, and a snowflake
+// is the same key every dashboard query already groups on.
+
+enum DiscordPairingMismatchReportStatus {
+  OPEN
+  REASSIGNED
+  DISMISSED
+}
+
+model DiscordPairingMismatchReport {
+  id String @id @default(uuid())
+
+  // The roster entry the report is about. Cascade because the only way to
+  // remove a roster entry is to deactivate it, and a deactivated entry's
+  // reports are no longer actionable — the same rule `discord_members`
+  // follows for departures and the rule `attendances` follows for cascades.
+  //
+  // Mirrors the column convention the rest of the schema uses for FKs:
+  // snake_case in SQL, camelCase in Prisma.
+  rosterEntryId String      @map("roster_entry_id")
+  rosterEntry   RosterEntry @relation(fields: [rosterEntryId], references: [id], onDelete: Cascade)
+
+  // The account that was already paired at the moment of the flag-set
+  // submission. NOT a FK to `discord_members` — same reasoning as
+  // `RosterEntry.discordUserId`: the account snowflake is global, while
+  // `discord_members.id` is per-server. Indexed because the admin dashboard
+  // may want to filter by paired account.
+  pairedAccountId String @map("paired_account_id")
+
+  // The Discord account that submitted the flagged attendance. Same lack of
+  // FK for the same reason. Indexed for the same reason.
+  submittingAccountId String @map("submitting_account_id")
+
+  // The raw handle the student typed. Kept alongside the snowflake so an
+  // administrator reviewing the report can see what the student entered.
+  submittedHandle String @map("submitted_handle")
+
+  // A short, fixed string naming the reason — e.g. `HANDLE_MISMATCH_PAIRING`.
+  // The dashboard surfaces it as-is; this is not a free-text field.
+  reason String
+
+  // The Dhaka civil date of the submission that opened the report. Stored
+  // as `String` `YYYY-MM-DD` per the project's date convention. The partial
+  // unique index on `(roster_entry_id, submission_dhaka_date)` where
+  // `status = 'open'` uses this column.
+  submissionDhakaDate String @map("submission_dhaka_date")
+
+  // The instant the report was created — what the dashboard's `reportedAt`
+  // column displays and what the listing sorts by, newest first.
+  reportedAt DateTime @default(now()) @map("reported_at")
+
+  status DiscordPairingMismatchReportStatus @default(OPEN)
+
+  // Audit only: which administrator took the final action, and when. NULL
+  // while the report is `open`. The relation is `SetNull` so deleting an
+  // admin account does not erase the report — the same rule `RosterImport`,
+  // `RosterSetting`, and `ChannelSchedule` follow.
+  reviewedByAdminId String?   @map("reviewed_by_admin_id")
+  reviewedByAdmin   User?     @relation(fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  reviewedAt        DateTime? @map("reviewed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // The partial unique index on `(roster_entry_id, submission_dhaka_date)`
+  // filtered by `status = 'open'` is created in raw SQL inside the migration
+  // because Prisma does not natively support partial indexes. A second flag-set
+  // submission on the same day for the same entry raises P2002 on this index;
+  // the repository swallows that conflict as a no-op (so two simultaneous
+  // flag-set submissions do not both create a row).
+
+  // The paired/submitting account filters the admin search would otherwise
+  // build are explicit indexes, not just on the primary key — the listing
+  // sorts newest-first within a status, and may filter by account snowflake.
+  @@index([pairedAccountId])
+  @@index([submittingAccountId])
+  // The dashboard listing sorts by status and reported-at DESC.
+  @@index([status, reportedAt])
+  // The audit-log query (which admin took which action).
+  @@index([reviewedByAdminId])
+  @@map("discord_pairing_mismatch_reports")
+}

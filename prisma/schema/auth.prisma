@@ -26,24 +26,28 @@ model User {
   updatedAt    DateTime   @updatedAt
 
   // Relations
-  profile       Profile?
-  refreshTokens RefreshToken[]
+  profile                       Profile?
+  refreshTokens                 RefreshToken[]
   // Broadcasts this admin triggered. Author only — an admin is never the
   // subject of an attendance or daily-update record.
-  reminderLogs  ReminderLog[]
+  reminderLogs                  ReminderLog[]
   // Channel schedules this admin last edited. Audit only, and nullable on the
   // other side: deleting the account must not take the schedule with it.
-  channelSchedules ChannelSchedule[]
+  channelSchedules              ChannelSchedule[]
   // The announcement template this admin last edited, and the manual sends they
   // triggered. Audit only, nullable on the other side for the same reason — the
   // message the program posts every evening must outlive the account.
-  announcementTemplates AnnouncementTemplate[]
-  announcementLogs      AnnouncementLog[]
+  announcementTemplates         AnnouncementTemplate[]
+  announcementLogs              AnnouncementLog[]
   // Roster spreadsheets this admin uploaded, and the enforcement setting they
   // last changed. Audit only, nullable on the other side for the same reason:
   // the record of who changed who may submit must outlive the account.
-  rosterImports  RosterImport[]
-  rosterSettings RosterSetting[]
+  rosterImports                 RosterImport[]
+  rosterSettings                RosterSetting[]
+  // Mismatch reports this admin took the final action on. Audit only, nullable
+  // on the other side for the same reason — the record of who reviewed a
+  // pairing-mismatch report must outlive the admin account.
+  discordPairingMismatchReports DiscordPairingMismatchReport[]
 
   @@map("users")
 }

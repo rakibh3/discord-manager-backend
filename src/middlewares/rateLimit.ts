@@ -71,6 +71,25 @@ export const verifyUserRateLimiter = rateLimit({
 });
 
 /**
+ * Email verification fires on the same typing-debounce rhythm as the handle
+ * check, so the same 60-per-minute budget covers an honest form session. The
+ * limiter is its OWN budget (not shared with `verifyUserRateLimiter`) so an
+ * attacker cannot exhaust one channel to starve the other — the form will need
+ * both alive at the same time.
+ *
+ * Each call costs one indexed read against the roster table, so the bound here
+ * also caps the rate at which the roster can be probed.
+ */
+export const verifyEmailRateLimiter = rateLimit({
+  ...publicLimiterDefaults,
+  windowMs: 60 * 1000,
+  limit: 60,
+  handler: throttled(
+    'Too many verification attempts. Please wait a minute and try again.',
+  ),
+});
+
+/**
  * A legitimate student submits once per day. The only reasons to send more are a
  * failed network request or a correction after a validation error, so 5 per
  * 15 minutes covers every honest case with room to spare and stops a scripted
