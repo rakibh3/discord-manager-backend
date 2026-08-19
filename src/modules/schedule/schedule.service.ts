@@ -113,8 +113,8 @@ const updateSchedule = async (
     throw new AppError(
       httpStatus.BAD_REQUEST,
       `The open time is not set here. The daily-update channel opens when the attendance announcement ` +
-        `is posted, so it follows the announcement time — change it at PATCH /api/announcement/attendance ` +
-        `and this window moves with it. The close time, the weekdays and the enabled flag are still set here.`,
+      `is posted, so it follows the announcement time — change it at PATCH /api/announcement/attendance ` +
+      `and this window moves with it. The close time, the weekdays and the enabled flag are still set here.`,
     );
   }
 
@@ -127,9 +127,9 @@ const updateSchedule = async (
     throw new AppError(
       httpStatus.BAD_REQUEST,
       `The close time must be later than the open time on the same day. ` +
-        `Received close ${closeTime} against an open time of ${openTime}, which follows the announcement time; ` +
-        `a window that crosses midnight is not supported, because a message posted after midnight belongs to ` +
-        `the next day's attendance record. To lock earlier than the announcement, move the announcement first.`,
+      `Received close ${closeTime} against an open time of ${openTime}, which follows the announcement time; ` +
+      `a window that crosses midnight is not supported, because a message posted after midnight belongs to ` +
+      `the next day's attendance record. To lock earlier than the announcement, move the announcement first.`,
     );
   }
 

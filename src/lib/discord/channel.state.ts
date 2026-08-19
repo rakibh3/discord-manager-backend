@@ -80,7 +80,7 @@ const resolveDailyUpdateChannel = async (
     if (channel.guild.id !== guild.guildId) {
       logger.error(
         `Daily-update channel ${channelId} belongs to guild ${channel.guild.id}, not the configured ${guild.guildId}. ` +
-          'The channel ID lists are positional — check that entry N of every list describes the same server.',
+        'The channel ID lists are positional — check that entry N of every list describes the same server.',
       );
       return null;
     }
@@ -116,19 +116,17 @@ const buildAnnouncementEmbed = async (open: boolean): Promise<EmbedBuilder> => {
 
   return open
     ? new EmbedBuilder()
-        .setColor(0x2ecc71)
-        .setTitle('🟢 Daily Update Channel is OPEN')
-        .setDescription(
-          `Please submit your daily learning update before **${formatTimeLabel(closeTime)}** tonight.`,
-        )
-        .setTimestamp()
+      .setColor(0x2ecc71)
+      .setTitle('🟢 Daily Update Channel is OPEN')
+      .setDescription(
+        `Please submit your daily learning update before **${formatTimeLabel(closeTime)}** tonight.`,
+      )
     : new EmbedBuilder()
-        .setColor(0xe74c3c)
-        .setTitle('🔴 Daily Update Channel is CLOSED')
-        .setDescription(
-          `Submission time is over for today. The channel reopens at **${formatTimeLabel(openTime)}**.`,
-        )
-        .setTimestamp();
+      .setColor(0xe74c3c)
+      .setTitle('🔴 Daily Update Channel is CLOSED')
+      .setDescription(
+        `Submission time is over for today.`,
+      )
 };
 
 /**
@@ -195,7 +193,7 @@ export const setDailyUpdateChannelOpen = async (
     if (isMissingPermissions(error)) {
       logger.error(
         `Missing permissions to edit channel ${channel.id}. The bot needs "Manage Roles" on #${channel.name} ` +
-          'to change the @everyone SendMessages overwrite. Until it is granted, the submission window is not enforced.',
+        'to change the @everyone SendMessages overwrite. Until it is granted, the submission window is not enforced.',
       );
 
       return { ok: false, error: message, missingPermission: true };
