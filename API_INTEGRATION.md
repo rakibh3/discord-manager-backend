@@ -615,7 +615,8 @@ export type ScheduleLastRun = {
 
 export type ChannelSchedulePayload = {
   schedule: {
-    openTime: string; // "HH:mm"
+    openTime: string; // "HH:mm" — read-only, mirrors the announcement time
+    openTimeSource: 'ANNOUNCEMENT'; // render the open-time field disabled
     closeTime: string; // "HH:mm"
     daysOfWeek: number[]; // 0 = Sunday … 6 = Saturday
     enabled: boolean;
@@ -744,10 +745,28 @@ export type AnnouncementPreview = {
 
 export type AnnouncementSendResult = {
   announcementDate: string;
-  attempt: number;
-  discordMessageId: string;
-  unresolvedTargets: string[];
-  channelId: string | null;
+  summary: {
+    total: number;
+    posted: number;
+    failed: number;
+    alreadySent: number;
+  };
+  servers: Array<{
+    guildId: string;
+    label: string;
+    status: 'posted' | 'already-sent' | 'disabled' | 'failed';
+    attempt?: number;
+    messageId?: string;
+    unresolvedTargets?: string[];
+    error?: string;
+  }>;
+  // The submission window, opened by this send in the servers it posted to.
+  channel: {
+    opened: string[]; // guild IDs whose #daily-update this send opened
+    alreadyOpen: string[]; // guild IDs already open — not re-edited
+    failed: Array<{ guildId: string; label: string; error: string | null }>;
+    locksAt: string | null; // "HH:mm", or null when no lock job is registered
+  };
 };
 
 // ── Reminders ───────────────────────────────────────────────────────────
@@ -1544,7 +1563,7 @@ All routes 🔐. This governs when ~5,000 students may post in `#daily-update`.
 
 #### 🔐 `GET /api/schedule/daily-update`
 
-No parameters. The row is created lazily with PID defaults (18:00 / 23:59 / all seven days / enabled) on first read, so this never 404s.
+No parameters. The row is created lazily with defaults (19:00 / 23:59 / all seven days / enabled) on first read, so this never 404s.
 
 ```jsonc
 {
@@ -1553,7 +1572,8 @@ No parameters. The row is created lazily with PID defaults (18:00 / 23:59 / all 
   "message": "Channel schedule retrieved successfully",
   "data": {
     "schedule": {
-      "openTime": "18:00",
+      "openTime": "19:00",
+      "openTimeSource": "ANNOUNCEMENT",
       "closeTime": "23:59",
       "daysOfWeek": [0, 1, 2, 3, 4, 5, 6],
       "enabled": true,
@@ -1579,6 +1599,7 @@ No parameters. The row is created lazily with PID defaults (18:00 / 23:59 / all 
 }
 ```
 
+- **`openTime` is read-only here and `openTimeSource` is always `"ANNOUNCEMENT"`.** The channel opens at the moment the attendance announcement is posted, so the open time mirrors `announceTime` from `GET /api/announcement/attendance`. Render it as a disabled field with a link to the announcement form; sending it back in a `PATCH` is a 400.
 - `channel.isOpen` is read **live from Discord** on every request (an admin can flip the overwrite by hand), so this endpoint always costs a Discord API call — never cache it.
 - **`scheduler.lastRun.error` is where a missing `Manage Roles` permission shows up.** If the channel stops opening, check here first; `DiscordAPIError[50013]` means the bot lacks the permission on the channel.
 - `scheduler.processEnabled === false` means `SCHEDULER_ENABLED=false` on this process — the timed jobs are off, but the manual open/lock endpoints still work.
@@ -1590,14 +1611,15 @@ No parameters. The row is created lazily with PID defaults (18:00 / 23:59 / all 
 
 | Field        | Type     | Rules                                           |
 | ------------ | -------- | ----------------------------------------------- |
-| `openTime`   | string   | 24-hour `HH:mm`, `00:00`–`23:59`                |
-| `closeTime`  | string   | same                                            |
+| `closeTime`  | string   | 24-hour `HH:mm`, `00:00`–`23:59`                |
 | `daysOfWeek` | number[] | ≥ 1 entry, each 0–6 (0 = Sunday), no duplicates |
 | `enabled`    | boolean  | —                                               |
 
 Do **not** send `timezone` — Zod strips it silently; the zone is fixed.
 
-**Cross-field rule (a 400 from the service, not from Zod):** `closeTime` must be strictly greater than `openTime` **after merging with the stored row**. Sending `{ "closeTime": "02:00" }` against a stored `openTime` of `18:00` is a 400 with a long explanatory message. Mirror this check in the form before submitting, using the currently-loaded schedule as the merge base.
+**`openTime` is refused here (400), not ignored.** It mirrors the announcement time, so it changes at `PATCH /api/announcement/attendance` and this window moves with it. The refusal is deliberate: silently dropping the field would let a form report a successful save while the open time never moved.
+
+**Cross-field rule (a 400 from the service, not from Zod):** `closeTime` must be strictly greater than the stored `openTime`. Sending `{ "closeTime": "02:00" }` against a stored `openTime` of `19:00` is a 400 with a long explanatory message. Mirror this check in the form before submitting, using the currently-loaded schedule as the merge base — and note that lowering `closeTime` past the announcement time is refused, so the announcement has to move first.
 
 **200** → the same payload shape as `GET`, already reflecting the change (the scheduler is reloaded in-process; no restart needed).
 
@@ -1609,7 +1631,7 @@ import { api, ApiError } from '@/lib/api/client';
 import type { ChannelSchedulePayload } from '@/lib/api/types';
 
 export async function updateSchedule(input: {
-  openTime?: string;
+  // no openTime — it follows the announcement time
   closeTime?: string;
   daysOfWeek?: number[];
   enabled?: boolean;
@@ -1903,7 +1925,7 @@ Returns the current attendance submission window projection.
   "data": {
     "isOpen": true, // whether the window is open right now
     "date": "2026-08-18", // today's Asia/Dhaka civil date
-    "openTime": "18:00", // HH:mm, Asia/Dhaka
+    "openTime": "19:00", // HH:mm, Asia/Dhaka
     "closeTime": "23:59", // HH:mm, Asia/Dhaka
     "daysOfWeek": [0, 1, 2, 3, 4, 5, 6], // 0=Sunday..6=Saturday
     "enabled": true, // false = paused (window never opens)
@@ -2082,7 +2104,9 @@ Do **not** send `timezone` — Zod strips it silently; the zone is fixed.
 
 > ⚠️ **`mentionEveryone: true` pings every member of the guild, every evening, until it is turned off.** It is the only way the announcement can notify the whole server — a literal `@everyone` typed into `body` is inert, because `allowedMentions` is built from these fields alone and never parsed from the text. Put this behind an explicit confirmation that names the member count, and show it prominently on the read screen. The admin who set it is recorded in `template.updatedBy`.
 
-**200** → the same payload shape as `GET`, already reflecting the change. Changing `announceTime`, `daysOfWeek`, or `enabled` rebuilds the cron task in-process; no restart needed. A reload failure does **not** fail the request (the row is saved) — it surfaces under `scheduler` on the next read.
+**200** → the same payload shape as `GET`, already reflecting the change. Changing `announceTime`, `daysOfWeek`, or `enabled` rebuilds the cron task in-process; no restart needed.
+
+**Changing `announceTime` also moves the `#daily-update` channel's opening time**, in the same transaction — the channel opens when this announcement is posted. Both cron tasks are rebuilt, and the channel is reconciled immediately, so a time that has already passed today opens the channel now rather than tomorrow. Re-fetch `GET /api/schedule/daily-update` after this call, and expect a **400** if `announceTime` is not strictly earlier than the schedule's `closeTime` (it would leave students no window to post in). A reload failure does **not** fail the request (the row is saved) — it surfaces under `scheduler` on the next read.
 
 ```ts
 // actions/announcement.ts
@@ -2131,6 +2155,8 @@ Renders against today's live values and **stores nothing**. Use it for the live 
 
 Posts **immediately**, leaving the stored schedule untouched. Works on every process, including one where `SCHEDULER_ENABLED=false`.
 
+**It also opens `#daily-update` in the servers it posted to.** The message tells students to submit and the window is what lets them, so one click does both — a send that announced a window nobody could post in would be worse than no send.
+
 **200** → `data: AnnouncementSendResult`.
 
 | Status | Cause                                                                                              |
@@ -2142,6 +2168,10 @@ Posts **immediately**, leaving the stored schedule untouched. Works on every pro
 - **At most one post per Dhaka day**, enforced by a database claim rather than by timing — a double-clicked button gets the 409, not a second message. `{ "force": true }` is the only way to post twice in one day and files the second one as the next `attempt`.
 - **A failed send does not consume the day.** After fixing a permission, retry plainly; no `force` needed.
 - This is **outward-facing and irreversible** — potentially a mass mention to thousands of students. Put it behind a confirmation dialog that shows `preview.content` and, when `mentionEveryone` is on, says so explicitly.
+- **Read `data.channel` after every send.** `opened` is where the window was opened, `alreadyOpen` is where it already was (skipped, so a forced second send does not post a second "Channel is OPEN" embed), and `failed` is where the announcement went out but the channel did **not** open — usually a missing `Manage Roles`, and worth showing as a warning next to the success, since those students can read the message and cannot act on it.
+- **`channel.locksAt` is `null` when the channel schedule is disabled**, meaning no lock job is registered and the window this send opened will stay open past midnight — where a post lands on the _next_ day's record. Surface it: the admin has to lock it by hand at `POST /api/schedule/daily-update/lock`.
+- Only servers this run **posted** to are opened. A server whose post failed was never told to submit, and one that answered `already-sent` was opened when that earlier post went out.
+- The stored open time is **not** changed. A send at 20:30 is a moment, not a new schedule; tomorrow still opens at `announceTime`.
 
 ---
 
@@ -2640,13 +2670,13 @@ Print this next to the monitor.
 - [ ] `date` on `POST /reminders/send` is **required and never inferred**. Always show the `/targets` preview and a confirmation first.
 - [ ] The reminder message cap is **1970** characters, not 2000.
 - [ ] `POST /reminders/send` and `POST /discord/sync` return **202** — the work hasn't happened yet. Poll.
-- [ ] `PATCH /schedule/daily-update` rejects an empty body, and validates `closeTime > openTime` against the **merged** result — mirror that check client-side.
+- [ ] `PATCH /schedule/daily-update` rejects an empty body, rejects `openTime` outright (it follows the announcement time), and validates `closeTime > openTime` against the stored open time — mirror those checks client-side.
 - [ ] Never expose a cron input for the schedule; times + weekday checkboxes only.
 - [ ] `POST /schedule/daily-update/open|lock` posts an announcement embed to a channel thousands of students read. Confirm first.
 - [ ] Bind the announcement editor to `template.body` (placeholders intact), **never** to `preview.content` — a round-trip would bake today's date into the stored message.
 - [ ] Drive the announcement character counter from `preview.length`, not `body.length`: the 2,000 limit is checked on the **rendered** message plus the mention line.
 - [ ] `mentionEveryone: true` pings the whole guild every evening until turned off. Confirm explicitly and show it on the read screen; a literal `@everyone` typed into the body is inert.
-- [ ] `POST /announcement/attendance/send` is a mass mention and irreversible. Second send today is a **409**; `{ "force": true }` is the only way past it.
+- [ ] `POST /announcement/attendance/send` is a mass mention and irreversible. Second send today is a **409**; `{ "force": true }` is the only way past it. It also opens `#daily-update` — surface `data.channel.failed` and a `null` `data.channel.locksAt`.
 - [ ] Don't offer a close-time field on the announcement screen — `{{close_time}}` is read from the `#daily-update` schedule so the two can never disagree.
 - [ ] The announcement has **no boot reconcile**: if `today.posted` is false after `nextRunAt` passed, that day needs a manual send.
 - [ ] Debounce `verify-user` at 500 ms and abort stale requests — the budget is 60/min per IP.

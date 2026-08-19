@@ -8,6 +8,7 @@ import type {
 } from '@generated/prisma/enums';
 
 import { prisma } from '@/lib/prisma';
+import { DAILY_UPDATE_SCHEDULE_KEY } from '@/repositories/channelSchedule.repository';
 import { DEFAULT_ANNOUNCEMENT_BODY } from '@/utils/announcementTemplate';
 
 /**
@@ -86,6 +87,13 @@ export type TUpdateAnnouncementInput = {
   mentionUsernames?: string[];
   /** `HH:mm`, Asia/Dhaka. Validate with `timeOfDaySchema`. */
   announceTime?: string;
+  /**
+   * When set, `channel_schedules.open_time` is written to this value in the
+   * same transaction. Always equal to `announceTime` — it is passed separately
+   * so this layer never infers a second table's contents from a field, and so
+   * a save that does not touch the announcement time cannot move the window.
+   */
+  mirrorOpenTime?: string;
   /** 0 = Sunday … 6 = Saturday. */
   daysOfWeek?: number[];
   enabled?: boolean;
@@ -94,21 +102,44 @@ export type TUpdateAnnouncementInput = {
 };
 
 /**
- * Applies a partial change to the template.
+ * Applies a partial change to the template, mirroring the announce time onto
+ * the channel window when it moved.
  *
  * Whether the result is coherent — a body that renders inside Discord's limit,
- * only supported placeholders, at least one weekday — is settled by the service
- * before this is called. This layer stores what it is given.
+ * only supported placeholders, at least one weekday, an announce time still
+ * earlier than the channel's close time — is settled by the service before this
+ * is called. This layer stores what it is given.
+ *
+ * The two rows are written in ONE transaction because they are one fact: the
+ * moment students are told to submit is the moment the channel opens. Two
+ * separate writes would leave a crash between them showing an announcement at
+ * 20:00 and a channel opening at 19:00, and — since `open_time` is not editable
+ * on its own — no way for an admin to see or repair the difference short of
+ * re-saving the announcement.
  */
 const updateTemplate = async ({
   updatedById,
+  mirrorOpenTime,
   ...fields
-}: TUpdateAnnouncementInput): Promise<TAnnouncementTemplateWithEditor> =>
-  prisma.announcementTemplate.update({
+}: TUpdateAnnouncementInput): Promise<TAnnouncementTemplateWithEditor> => {
+  const saveTemplate = prisma.announcementTemplate.update({
     where: { key: ATTENDANCE_ANNOUNCEMENT_KEY },
     data: { ...fields, updatedById },
     include: editorSelect,
   });
+
+  if (!mirrorOpenTime) return saveTemplate;
+
+  const [template] = await prisma.$transaction([
+    saveTemplate,
+    prisma.channelSchedule.update({
+      where: { key: DAILY_UPDATE_SCHEDULE_KEY },
+      data: { openTime: mirrorOpenTime, updatedById },
+    }),
+  ]);
+
+  return template;
+};
 
 export type TClaimDayInput = {
   /** The server this attempt posts to. The claim is per server. */

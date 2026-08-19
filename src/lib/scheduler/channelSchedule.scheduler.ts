@@ -11,6 +11,7 @@ import {
   isDiscordConnected,
 } from '@/lib/discord/client';
 import { forEachGuild, type TGuildOutcome } from '@/lib/discord/fanout';
+import { announcementRepository } from '@/repositories/announcement.repository';
 import {
   channelScheduleRepository,
   type TChannelScheduleWithEditor,
@@ -344,6 +345,117 @@ const registerTasks = (schedule: TChannelScheduleWithEditor): void => {
 };
 
 /**
+ * Brings `open_time` back in line with the announcement time at startup.
+ *
+ * The open time is a mirror of `announcement_templates.announce_time` — the
+ * channel opens at the moment students are told to submit — and the save path
+ * writes both rows in one transaction. This exists for the states that path
+ * cannot reach: a database whose rows predate the mirror, and the narrow window
+ * where a crash landed between the transaction committing and this process
+ * starting. Since `open_time` is no longer editable on its own, a row left
+ * disagreeing would otherwise stay wrong forever with no way for an admin to
+ * correct it.
+ *
+ * Silent when the rows already agree, which is every ordinary boot. A
+ * correction is logged loudly, because it means something was firing at the
+ * wrong hour until now.
+ *
+ * The announcement being DISABLED changes nothing here: the time still says
+ * when the window belongs, and pausing the message must not quietly move when
+ * students can post.
+ */
+const mirrorAnnounceTimeOntoOpenTime = async (
+  schedule: TChannelScheduleWithEditor,
+): Promise<TChannelScheduleWithEditor> => {
+  const template = await announcementRepository.getOrCreateTemplate();
+
+  if (template.announceTime === schedule.openTime) return schedule;
+
+  // A window that would open at or after it locks is refused rather than
+  // written — the same rule the API enforces, applied to data that got in
+  // before it did. Nothing throws out of the scheduler, so this is a loud log
+  // and the stored open time stands.
+  if (template.announceTime >= schedule.closeTime) {
+    logger.error(
+      `Announce time ${template.announceTime} is not earlier than the close time ${schedule.closeTime}, ` +
+        `so the open time stays at ${schedule.openTime}. The channel is opening at a time the announcement ` +
+        'no longer matches - fix it by moving the close time, then re-saving the announcement time.',
+    );
+    return schedule;
+  }
+
+  logger.warn(
+    `Open time ${schedule.openTime} did not match the announce time ${template.announceTime}; ` +
+      'correcting it. The channel opens when the attendance announcement is posted.',
+  );
+
+  return channelScheduleRepository.syncOpenTime(template.announceTime);
+};
+
+/**
+ * Opens the daily-update channel in the servers an announcement just posted to.
+ *
+ * The manual "Send now" button posts the message that tells students to submit
+ * and opens the window they submit through — one action, because the two are
+ * one moment. The timed path deliberately does NOT come through here: the open
+ * job already fires at the announce time (`open_time` mirrors `announce_time`),
+ * and a second permission edit at the busiest minute of the evening would
+ * multiply the Discord burst for no change in outcome.
+ *
+ * Servers already open are skipped rather than re-edited, which is what keeps a
+ * forced second send from posting a second "Channel is OPEN" embed into a
+ * channel thousands of students read. A server whose state cannot be READ is
+ * opened anyway — the edit is idempotent, and refusing to act on an unknown
+ * state would leave the window shut on the one server that most needs checking.
+ *
+ * Never throws: the announcement has already been posted by the time this runs,
+ * and a failure to open must not turn a successful send into an error the admin
+ * would retry.
+ */
+export const openChannelsForAnnouncement = async (
+  guildIds: string[],
+): Promise<{
+  outcomes: TGuildOutcome<{ announced: boolean }>[];
+  alreadyOpen: string[];
+}> => {
+  const targets = getSchedulableGuilds().filter((guild) =>
+    guildIds.includes(guild.guildId),
+  );
+
+  const needsOpening: TGuildConfig[] = [];
+  const alreadyOpen: string[] = [];
+
+  // Sequential, like every other fan-out: one live permission read per server,
+  // and fan-out must not multiply the instantaneous Discord burst.
+  for (const guild of targets) {
+    if ((await isDailyUpdateChannelOpen(guild)) === true) {
+      alreadyOpen.push(guild.guildId);
+      continue;
+    }
+
+    needsOpening.push(guild);
+  }
+
+  if (needsOpening.length === 0) return { outcomes: [], alreadyOpen };
+
+  // `announce: true`, unlike the boot reconcile: this is a state CHANGE an
+  // administrator deliberately triggered, at an hour students are not
+  // expecting, so the channel says so. The reconcile is silent because it
+  // corrects rather than announces.
+  const outcomes = await applyChannelState(needsOpening, true, {
+    trigger: 'manual',
+    announce: true,
+  });
+
+  logger.info(
+    `Announcement send opened ${outcomes.filter((o) => o.ok).length}/${outcomes.length} server(s) ` +
+      `(${alreadyOpen.length} already open).`,
+  );
+
+  return { outcomes, alreadyOpen };
+};
+
+/**
  * Loads the schedule, registers the jobs, and reconciles the channel.
  *
  * Never throws: startup calls this after the bot is ready, and a scheduler
@@ -359,7 +471,9 @@ export const startChannelScheduler = async (): Promise<void> => {
   }
 
   try {
-    const schedule = await channelScheduleRepository.getOrCreateSchedule();
+    const schedule = await mirrorAnnounceTimeOntoOpenTime(
+      await channelScheduleRepository.getOrCreateSchedule(),
+    );
 
     await destroyTasks();
 

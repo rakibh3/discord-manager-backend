@@ -16,12 +16,18 @@ import { prisma } from '@/lib/prisma';
 export const DAILY_UPDATE_SCHEDULE_KEY = 'DAILY_UPDATE';
 
 /**
- * PID §7 / §14: the channel opens at 6:00 PM and locks at 11:59 PM, every day.
+ * The channel opens at 7:00 PM and locks at 11:59 PM, every day.
  * These are the values the row is born with; from then on the dashboard owns
  * them.
+ *
+ * `openTime` must match `DEFAULT_ANNOUNCEMENT.announceTime`: the channel opens
+ * at the moment the announcement telling students to submit is posted, and
+ * `openTime` is a mirror of `announce_time` from the first row onward (see
+ * `syncOpenTime`). A fresh database that disagreed here would be corrected by
+ * the first boot mirror, which is a correction it should never need to make.
  */
 export const DEFAULT_SCHEDULE = {
-  openTime: '18:00',
+  openTime: '19:00',
   closeTime: '23:59',
   daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
   enabled: true,
@@ -58,8 +64,12 @@ const getOrCreateSchedule = async (): Promise<TChannelScheduleWithEditor> =>
   });
 
 export type TUpdateScheduleInput = {
-  /** `HH:mm`, Asia/Dhaka. Validate with `timeOfDaySchema`. */
-  openTime?: string;
+  /**
+   * `HH:mm`, Asia/Dhaka. Validate with `timeOfDaySchema`.
+   *
+   * No `openTime` here on purpose — it is mirrored from the announcement time
+   * through `syncOpenTime`, never patched alongside the rest of the schedule.
+   */
   closeTime?: string;
   /** 0 = Sunday … 6 = Saturday. */
   daysOfWeek?: number[];
@@ -85,7 +95,33 @@ const updateSchedule = async ({
     include: editorSelect,
   });
 
+/**
+ * Writes the mirrored open time, without touching anything else.
+ *
+ * `open_time` is not independently editable: it follows
+ * `announcement_templates.announce_time`, so the channel opens exactly when the
+ * announcement that tells students to submit is posted. Two writers use this —
+ * the announcement save (inside its transaction, carrying the admin who made
+ * the change) and the scheduler's boot mirror (with no admin, because nobody
+ * made a change; a startup correction must not rewrite the audit field and
+ * claim an administrator did this).
+ *
+ * Whether the resulting window is coherent — the new open time still earlier
+ * than `close_time` — is settled by the caller. This layer stores what it is
+ * given.
+ */
+const syncOpenTime = async (
+  openTime: string,
+  updatedById?: string,
+): Promise<TChannelScheduleWithEditor> =>
+  prisma.channelSchedule.update({
+    where: { key: DAILY_UPDATE_SCHEDULE_KEY },
+    data: { openTime, ...(updatedById ? { updatedById } : {}) },
+    include: editorSelect,
+  });
+
 export const channelScheduleRepository = {
   getOrCreateSchedule,
   updateSchedule,
+  syncOpenTime,
 };

@@ -18,6 +18,10 @@ import {
   reloadAnnouncementSchedule,
 } from '@/lib/scheduler/announcement.scheduler';
 import {
+  openChannelsForAnnouncement,
+  reloadChannelSchedule,
+} from '@/lib/scheduler/channelSchedule.scheduler';
+import {
   announcementRepository,
   type TAnnouncementTemplateWithEditor,
 } from '@/repositories/announcement.repository';
@@ -240,6 +244,28 @@ const updateAnnouncement = async (
 
   if (payload.body !== undefined) assertSupportedPlaceholders(payload.body);
 
+  // The announce time is also the channel's open time, so a move has to be
+  // legal as a window: `openTime` must stay strictly earlier than `closeTime`,
+  // the same rule `schedule.service.ts` enforces on its own side. Checked
+  // against the STORED close time rather than a submitted one, because this
+  // endpoint cannot change it — an announcement at 23:59 against a close of
+  // 23:59 would otherwise write a window that opens and locks in the same
+  // minute, and one at 00:30 would cross midnight.
+  if (payload.announceTime !== undefined) {
+    const schedule = await channelScheduleRepository.getOrCreateSchedule();
+
+    if (payload.announceTime >= schedule.closeTime) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `The announcement time must be earlier than the time the daily-update channel locks. ` +
+          `Received ${payload.announceTime} against a close time of ${schedule.closeTime}. ` +
+          `The channel opens when this announcement is posted, so an announcement at or after the ` +
+          `close time would leave students no window to post in. Move the close time first at ` +
+          `PATCH /api/schedule/daily-update.`,
+      );
+    }
+  }
+
   // Normalized here rather than trusted from validation: `validateRequest`
   // checks `req.body` without assigning the parsed result back, so the schema's
   // transform never reaches this layer. The stored form must match what
@@ -269,8 +295,28 @@ const updateAnnouncement = async (
   const updated = await announcementRepository.updateTemplate({
     ...payload,
     ...(mentionUsernames ? { mentionUsernames } : {}),
+    // One save, two rows: the channel opens when the announcement is posted.
+    ...(payload.announceTime !== undefined
+      ? { mirrorOpenTime: payload.announceTime }
+      : {}),
     updatedById: adminId,
   });
+
+  // The announce time drives two cron tasks now — the announcement's own, and
+  // the channel's open job through the mirrored `open_time`. Reloading the
+  // channel scheduler also reconciles the live channel, so moving the time to
+  // one that has already passed today opens the channel immediately rather
+  // than tomorrow.
+  if (payload.announceTime !== undefined) {
+    try {
+      await reloadChannelSchedule();
+    } catch (error) {
+      logger.error(
+        'Announcement saved but the channel scheduler could not be reloaded:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
 
   const scheduleChanged = SCHEDULE_FIELDS.some(
     (field) => payload[field] !== undefined,
@@ -330,11 +376,73 @@ const previewAnnouncement = async (payload: {
 };
 
 /**
+ * Opens `#daily-update` after a manual send, and reports what happened.
+ *
+ * The stored schedule is deliberately NOT touched: a send at 20:30 is a moment,
+ * not a new opening time, so tomorrow still opens at the announce time. That
+ * matches the manual open/lock endpoints, which override the state without
+ * rewriting the row.
+ *
+ * `locksAt` is the honest part of the answer. With the channel schedule
+ * disabled there is no lock job, so a window opened here would stay open past
+ * midnight and file the small hours under the following day — the admin needs
+ * to know that before they walk away, not discover it in the morning.
+ */
+const openWindowForPostedServers = async (guildIds: string[]) => {
+  const schedule = await channelScheduleRepository.getOrCreateSchedule();
+
+  if (guildIds.length === 0) {
+    return { opened: [], alreadyOpen: [], failed: [], locksAt: null };
+  }
+
+  try {
+    const { outcomes, alreadyOpen } =
+      await openChannelsForAnnouncement(guildIds);
+
+    return {
+      opened: outcomes.filter((o) => o.ok).map((o) => o.guildId),
+      alreadyOpen,
+      failed: outcomes
+        .filter((o) => !o.ok)
+        .map((o) => ({
+          guildId: o.guildId,
+          label: o.label,
+          error: o.ok ? null : o.error,
+        })),
+      locksAt: schedule.enabled ? schedule.closeTime : null,
+    };
+  } catch (error) {
+    // Nothing under the scheduler throws past its own boundary, so this is the
+    // belt to that braces: a send that posted must never come back as a 500.
+    logger.error(
+      'The announcement posted but the channel could not be opened:',
+      error instanceof Error ? error.message : error,
+    );
+
+    return {
+      opened: [],
+      alreadyOpen: [],
+      failed: guildIds.map((guildId) => ({
+        guildId,
+        label: guildId,
+        error: 'The channel open failed; see the server logs.',
+      })),
+      locksAt: schedule.enabled ? schedule.closeTime : null,
+    };
+  }
+};
+
+/**
  * Posts the announcement now, independently of the schedule.
  *
  * The escape hatch for a missed run, a process that does not run the timed
  * tasks, or a first send after deployment. It does not touch the stored
  * schedule, so the next timed post still fires normally.
+ *
+ * It DOES open `#daily-update` in the servers it posted to, because the message
+ * tells students to submit and the window is what lets them: a send that
+ * announced a window nobody could post in would be worse than no send. See
+ * `openWindowForPostedServers`.
  *
  * `force` is the only way to post a second time in one day, and it is refused by
  * default: a double-clicked button must produce a 409, not a second
@@ -418,6 +526,20 @@ const sendAnnouncementNow = async (
     }
   }
 
+  // Sending the announcement opens the window it announces, in the servers this
+  // run actually posted to. Scoped to `posted` on purpose: a server whose post
+  // failed was never told to submit, and one that was `already-sent` was opened
+  // when that post went out — opening either here would move a window on the
+  // strength of a message that server never received.
+  //
+  // Never allowed to fail the request. The message is already in the channel;
+  // answering an error would invite a retry that cannot re-post (409) while
+  // looking like the fix. A failed open is reported in `channel` and stays
+  // visible on GET /api/schedule/daily-update as `lastRun.error`.
+  const channel = await openWindowForPostedServers(
+    posted.map((outcome) => outcome.guildId),
+  );
+
   // Partial success is a SUCCESS carrying the per-server detail. Posting really
   // did happen somewhere, and answering an error would invite a retry that
   // re-posts nothing while looking like the fix.
@@ -435,6 +557,7 @@ const sendAnnouncementNow = async (
       label: outcome.label,
       ...outcome.result,
     })),
+    channel,
   };
 };
 

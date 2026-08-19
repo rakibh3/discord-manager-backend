@@ -31,6 +31,15 @@ const weekdaySchema = z
  * `timezone` is deliberately absent. Zod strips unknown keys by default, so a
  * client that sends one is ignored rather than refused: the zone is fixed at
  * Asia/Dhaka and is reported, never accepted.
+ *
+ * `openTime` is the opposite case, and is present for exactly that reason. It
+ * is no longer settable here — it mirrors the announcement time — but being
+ * stripped is the wrong answer for a field a client has good reason to still be
+ * sending: the save would report success while the open time ignored it. Kept
+ * in the schema so it survives parsing and reaches the service, which refuses
+ * it with a message naming the endpoint that does own it. The refusal is an
+ * `AppError` rather than a Zod issue because `handleZodValidationError`
+ * title-cases every word, and this message contains a URL path.
  */
 const updateScheduleValidationSchema = z
   .object({
@@ -49,8 +58,7 @@ const updateScheduleValidationSchema = z
     enabled: z.boolean().optional(),
   })
   .refine((body) => Object.keys(body).length > 0, {
-    error:
-      'Provide at least one of openTime, closeTime, daysOfWeek, or enabled',
+    error: 'Provide at least one of closeTime, daysOfWeek, or enabled',
   });
 
 /**

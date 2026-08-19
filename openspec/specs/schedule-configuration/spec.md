@@ -15,7 +15,7 @@ The system SHALL persist the daily-update channel's schedule as data: an open ti
 #### Scenario: Schedule read before it has ever been saved
 
 - **WHEN** the schedule is read for the first time and no row exists
-- **THEN** a row is created with an open time of `18:00`, a close time of `23:59`, all seven weekdays active, and the schedule enabled
+- **THEN** a row is created with an open time of `19:00`, a close time of `23:59`, all seven weekdays active, and the schedule enabled
 - **AND** those values are returned
 
 #### Scenario: Exactly one schedule per channel

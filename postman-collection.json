@@ -456,7 +456,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"openTime\": \"18:00\",\n  \"closeTime\": \"23:59\",\n  \"daysOfWeek\": [\n    0,\n    1,\n    2,\n    3,\n    4,\n    5,\n    6\n  ],\n  \"enabled\": true\n}",
+              "raw": "{\n  \"closeTime\": \"23:59\",\n  \"daysOfWeek\": [\n    0,\n    1,\n    2,\n    3,\n    4,\n    5,\n    6\n  ],\n  \"enabled\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"

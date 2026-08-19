@@ -9,6 +9,7 @@ import {
 import type { TGuildConfig } from '@/config/discord';
 import { getDiscordClient, isDiscordConnected } from '@/lib/discord/client';
 import { channelScheduleRepository } from '@/repositories/channelSchedule.repository';
+import { getDhakaDate, getDhakaTimeOfDay } from '@/utils/dhakaDate';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('ChannelState');
@@ -131,6 +132,34 @@ const buildAnnouncementEmbed = async (open: boolean): Promise<EmbedBuilder> => {
 };
 
 /**
+ * The deduplication key for one open/lock notice, ≤ 25 characters (Discord's
+ * limit on `nonce`).
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────
+ * discord.js's REST layer times a request out after 15 seconds and retries it.
+ * A POST that Discord already processed but whose response never came back is
+ * indistinguishable from one it never received, so every retry creates another
+ * identical embed while only the last response returns a message ID. Observed
+ * exactly that way on a slow connection: one click on the manual open produced
+ * three "Channel is OPEN" embeds, 15.075s and 15.029s apart, and one send
+ * produced two, 15.094s apart.
+ *
+ * `enforceNonce: true` closes it at the only layer that can — Discord matches
+ * the nonce against recent messages from the same author and returns the
+ * existing message instead of creating a second. Retries carry the body they
+ * were built with, so a value computed once per call covers them however long
+ * they take; scoping it to the action and the Dhaka MINUTE additionally
+ * swallows a double-clicked button, while leaving a deliberate re-open a minute
+ * later free to announce.
+ *
+ * The same guarantee `postAttendanceAnnouncement` relies on, for the same
+ * reason. Anything else in this program that posts to a channel thousands of
+ * students read needs it too.
+ */
+const buildNoticeNonce = (open: boolean): string =>
+  `${open ? 'open' : 'lock'}-${getDhakaDate().replace(/-/g, '')}-${getDhakaTimeOfDay().replace(':', '')}`;
+
+/**
  * Opens or locks the channel for `@everyone`.
  *
  * Only `SendMessages` is touched. `ViewChannel` is deliberately left alone on
@@ -188,7 +217,14 @@ export const setDailyUpdateChannelOpen = async (
 
   try {
     const embed = await buildAnnouncementEmbed(open);
-    await channel.send({ embeds: [embed] });
+
+    await channel.send({
+      embeds: [embed],
+      // Without these two, a timed-out POST that Discord actually processed is
+      // retried into a second identical embed. See `buildNoticeNonce`.
+      enforceNonce: true,
+      nonce: buildNoticeNonce(open),
+    });
 
     return { ok: true, announced: true };
   } catch (error) {

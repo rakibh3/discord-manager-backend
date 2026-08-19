@@ -25,6 +25,12 @@ import { createLogger } from '@/utils/logger';
 const logger = createLogger('ScheduleService');
 
 type TUpdateSchedulePayload = {
+  /**
+   * Accepted by the schema only so it can be REFUSED here with an explanation.
+   * Zod strips unknown keys, so dropping it from the schema would make a
+   * dashboard still sending it look like it succeeded while the open time
+   * silently ignored every save. See `updateSchedule`.
+   */
   openTime?: string;
   closeTime?: string;
   daysOfWeek?: number[];
@@ -62,6 +68,11 @@ const buildScheduleResponse = async (schedule: TChannelScheduleWithEditor) => {
   return {
     schedule: {
       openTime: schedule.openTime,
+      // Read-only here, and flagged so the dashboard renders it that way rather
+      // than offering a picker whose every save is a 400. It mirrors
+      // `announcement_templates.announce_time`; the channel opens when the
+      // announcement telling students to submit is posted.
+      openTimeSource: 'ANNOUNCEMENT',
       closeTime: schedule.closeTime,
       daysOfWeek: schedule.daysOfWeek,
       enabled: schedule.enabled,
@@ -91,20 +102,34 @@ const getSchedule = async () =>
  * looks broken rather than misconfigured.
  */
 const updateSchedule = async (
-  payload: TUpdateSchedulePayload,
+  { openTime: rejectedOpenTime, ...payload }: TUpdateSchedulePayload,
   adminId: string,
 ) => {
+  // The open time follows the announcement time and is not editable here.
+  // Refused rather than ignored: silently dropping the field would leave an
+  // admin watching a time picker they moved snap back on the next read, with
+  // nothing saying why. The message names the endpoint that does own it.
+  if (rejectedOpenTime !== undefined) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `The open time is not set here. The daily-update channel opens when the attendance announcement ` +
+        `is posted, so it follows the announcement time — change it at PATCH /api/announcement/attendance ` +
+        `and this window moves with it. The close time, the weekdays and the enabled flag are still set here.`,
+    );
+  }
+
   const current = await channelScheduleRepository.getOrCreateSchedule();
 
-  const openTime = payload.openTime ?? current.openTime;
+  const openTime = current.openTime;
   const closeTime = payload.closeTime ?? current.closeTime;
 
   if (closeTime <= openTime) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
       `The close time must be later than the open time on the same day. ` +
-        `Received open ${openTime} and close ${closeTime}; a window that crosses midnight is not supported, ` +
-        `because a message posted after midnight belongs to the next day's attendance record.`,
+        `Received close ${closeTime} against an open time of ${openTime}, which follows the announcement time; ` +
+        `a window that crosses midnight is not supported, because a message posted after midnight belongs to ` +
+        `the next day's attendance record. To lock earlier than the announcement, move the announcement first.`,
     );
   }
 
